@@ -218,6 +218,14 @@ object GitEngine {
 
     // ── branches ──────────────────────────────────────────────────────────────
 
+    /** Resolves any ref (branch, tag, HEAD, SHA) to its full commit SHA. Used right before a
+     *  destructive delete — capturing the SHA first is what makes the undo-snackbar pattern
+     *  in Branches/Tags honest rather than a fake "undo" that can't actually restore anything:
+     *  recreating a branch/tag pointed at this exact SHA afterward genuinely reconstructs it. */
+    suspend fun resolveRef(git: Git, ref: String): GitResult<String> = io {
+        git.repository.resolve(ref)?.name ?: throw IllegalStateException("Couldn't resolve $ref")
+    }
+
     suspend fun listBranches(git: Git): GitResult<List<BranchInfo>> = io {
         val current = git.repository.branch
         val local = git.branchList().call()
@@ -436,9 +444,14 @@ object GitEngine {
         }
     }
 
-    suspend fun createTag(git: Git, name: String, message: String = ""): GitResult<Unit> = io {
+    suspend fun createTag(git: Git, name: String, message: String = "", targetSha: String? = null): GitResult<Unit> = io {
         val cmd = git.tag().setName(name)
         if (message.isNotBlank()) cmd.setMessage(message).setAnnotated(true) else cmd.setAnnotated(false)
+        if (targetSha != null) {
+            RevWalk(git.repository).use { walk ->
+                cmd.setObjectId(walk.parseAny(git.repository.resolve(targetSha)))
+            }
+        }
         cmd.call(); Unit
     }
 
@@ -486,6 +499,16 @@ object GitEngine {
     suspend fun getAheadBehind(git: Git): GitResult<Pair<Int, Int>> = io {
         val ts = BranchTrackingStatus.of(git.repository, git.repository.branch)
         Pair(ts?.aheadCount ?: 0, ts?.behindCount ?: 0)
+    }
+
+    /** Whether the current branch has an upstream (remote-tracking) branch configured at
+     *  all — distinct from ahead/behind being zero, which is also true for a branch that's
+     *  never been pushed. Used for the Changes screen's push-protection nudge: pushing a
+     *  branch called main/master with no upstream yet configured is the exact situation
+     *  where "am I about to create/overwrite something unexpected on the remote?" is worth
+     *  a beat of pause. */
+    suspend fun hasUpstream(git: Git): GitResult<Boolean> = io {
+        BranchTrackingStatus.of(git.repository, git.repository.branch) != null
     }
 
     suspend fun getHeadCommit(git: Git): GitResult<CommitInfo?> = io {

@@ -12,6 +12,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -261,8 +262,17 @@ fun ChangesScreen(
                     message = state.commitMessage,
                     onMessageChanged = vm::onCommitMessageChanged,
                     isWorking = state.isWorking,
+                    hasChanges = state.staged.isNotEmpty() || state.unstaged.isNotEmpty(),
                     onCommit = vm::commit,
                     onPush = vm::push,
+                    onGenerate = vm::generateCommitMessage,
+                    onStageCommitPush = vm::stageCommitAndPush,
+                    recentMessages = state.recentMessages,
+                    onPickRecent = vm::applyRecentMessage,
+                    template = state.commitTemplate,
+                    onSaveTemplate = vm::setCommitTemplate,
+                    showUpstreamNudge = state.currentBranch in PROTECTED_BRANCH_NAMES && state.hasUpstream == false,
+                    branchName = state.currentBranch,
                 )
         }
     }
@@ -533,6 +543,7 @@ private fun FileRow(
 ) {
     val (icon, color) = statusIcon(e.status)
     var showOptions by remember { mutableStateOf(false) }
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
 
     // Swipe right = primary action (stage/unstage). Swipe left = discard, but only for
     // unstaged files — staged files have nothing destructive to do in that direction, so
@@ -540,8 +551,14 @@ private fun FileRow(
     val dismissState = rememberSwipeToDismissBoxState(
         confirmValueChange = { value ->
             when (value) {
-                SwipeToDismissBoxValue.StartToEnd -> onToggle()
-                SwipeToDismissBoxValue.EndToStart -> if (!staged) onDiscard()
+                SwipeToDismissBoxValue.StartToEnd -> {
+                    haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                    onToggle()
+                }
+                SwipeToDismissBoxValue.EndToStart -> if (!staged) {
+                    haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                    onDiscard()
+                }
                 SwipeToDismissBoxValue.Settled -> {}
             }
             false // always snap back — the row leaves the list via data change, not the swipe animation
@@ -610,19 +627,135 @@ private fun FileRow(
     }
 }
 
+private val COMMIT_TYPES = listOf("feat", "fix", "chore", "docs", "refactor", "test", "perf", "style", "ci", "build")
+private val COMMIT_PREFIX_REGEX = Regex("""^(\w+)(\(([^)]*)\))?:\s*""")
+
+/**
+ * Picking a type chip rewrites just the `type(scope): ` prefix of the message, in place —
+ * there's no separate "preview" text to keep in sync with what you actually type, the field
+ * itself always shows exactly what will be committed. Reselecting the same chip clears the
+ * prefix back out; switching chips swaps it. Scope is optional and only appears once a type's
+ * picked, since a bare `feat: ` is a completely valid conventional commit on its own.
+ */
+private val PROTECTED_BRANCH_NAMES = setOf("main", "master")
+
 @Composable
 private fun CommitBar(
     message: String, onMessageChanged: (String) -> Unit,
-    isWorking: Boolean, onCommit: () -> Unit, onPush: () -> Unit,
+    isWorking: Boolean, hasChanges: Boolean,
+    onCommit: () -> Unit, onPush: () -> Unit,
+    onGenerate: () -> Unit, onStageCommitPush: () -> Unit,
+    recentMessages: List<String>, onPickRecent: (String) -> Unit,
+    template: com.willykez.repomaster.data.CommitPrefs.Template,
+    onSaveTemplate: (prefix: String, footer: String) -> Unit,
+    showUpstreamNudge: Boolean, branchName: String,
 ) {
+    val currentMatch = remember(message) { COMMIT_PREFIX_REGEX.find(message) }
+    val currentType = currentMatch?.groupValues?.get(1)?.takeIf { it in COMMIT_TYPES }
+    var scope by remember { mutableStateOf(currentMatch?.groupValues?.get(3) ?: "") }
+    var showHistory by remember { mutableStateOf(false) }
+    var showTemplateEditor by remember { mutableStateOf(false) }
+
+    fun applyType(type: String?) {
+        val body = if (currentMatch != null) message.substring(currentMatch.range.last + 1) else message
+        val newPrefix = when {
+            type == null -> ""
+            scope.isNotBlank() -> "$type($scope): "
+            else -> "$type: "
+        }
+        onMessageChanged(newPrefix + body)
+    }
+
     Surface(tonalElevation = 8.dp, shadowElevation = 8.dp) {
         Column(Modifier.fillMaxWidth().imePadding().padding(12.dp)) {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                COMMIT_TYPES.forEach { type ->
+                    FilterChip(
+                        selected = currentType == type,
+                        onClick = { applyType(if (currentType == type) null else type) },
+                        label = { Text(type, style = MaterialTheme.typography.labelSmall) },
+                    )
+                }
+            }
+            if (currentType != null) {
+                Spacer(Modifier.height(6.dp))
+                OutlinedTextField(
+                    value = scope,
+                    onValueChange = { scope = it; applyType(currentType) },
+                    label = { Text("Scope (optional)") },
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Spacer(Modifier.height(8.dp))
             OutlinedTextField(
                 value = message, onValueChange = onMessageChanged,
                 label = { Text("Commit message") },
+                trailingIcon = {
+                    Row {
+                        // Only worth offering once there's actually something to summarize —
+                        // an empty working tree has nothing for the heuristic to describe.
+                        if (hasChanges) {
+                            IconButton(onClick = onGenerate) {
+                                Icon(Icons.Filled.AutoAwesome, "Generate message from changes", tint = CommandBlue)
+                            }
+                        }
+                        if (recentMessages.isNotEmpty()) {
+                            Box {
+                                IconButton(onClick = { showHistory = true }) {
+                                    Icon(Icons.Filled.History, "Recent messages", tint = StatusClean)
+                                }
+                                DropdownMenu(expanded = showHistory, onDismissRequest = { showHistory = false }) {
+                                    recentMessages.forEach { msg ->
+                                        DropdownMenuItem(
+                                            text = { Text(msg, maxLines = 1, style = MaterialTheme.typography.bodySmall) },
+                                            onClick = { onPickRecent(msg); showHistory = false },
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
                 modifier = Modifier.fillMaxWidth(),
                 minLines = 2, maxLines = 4,
             )
+            val firstLineLength = message.substringBefore('\n').length
+            if (firstLineLength > 72) {
+                Text(
+                    "First line is $firstLineLength characters — most tools wrap or truncate a commit title past ~72",
+                    style = MaterialTheme.typography.labelSmall, color = Amber,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+            Row(
+                Modifier.fillMaxWidth().clickable { showTemplateEditor = true },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Filled.Description, null, Modifier.size(13.dp), tint = StatusClean)
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    if (template.prefix.isBlank() && template.footer.isBlank()) "No commit template set"
+                    else "Template: ${template.prefix.ifBlank { "—" }} … ${template.footer.ifBlank { "—" }}",
+                    style = MaterialTheme.typography.labelSmall, color = StatusClean, maxLines = 1,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+            if (showUpstreamNudge) {
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.WarningAmber, null, Modifier.size(14.dp), tint = Amber)
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        "\"$branchName\" has no upstream yet — pushing will set one up on the remote",
+                        style = MaterialTheme.typography.labelSmall, color = Amber,
+                    )
+                }
+            }
             Spacer(Modifier.height(8.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = onPush, modifier = Modifier.weight(1f), enabled = !isWorking) {
@@ -635,14 +768,74 @@ private fun CommitBar(
                     else { Icon(Icons.Filled.Check, null, Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Commit") }
                 }
             }
+            Spacer(Modifier.height(8.dp))
+            // The "just ship it" shortcut — stages everything, commits with whatever's in
+            // the box above, pushes. Kept visually distinct (full-width, tonal emerald)
+            // from Push/Commit above so it doesn't get tapped by reflex when only a partial
+            // stage+commit was actually intended.
+            Button(
+                onClick = onStageCommitPush,
+                enabled = !isWorking && hasChanges,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = Emerald, contentColor = Color.Black),
+            ) {
+                if (isWorking) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.Black)
+                } else {
+                    Icon(Icons.Filled.Bolt, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Stage All + Commit + Push")
+                }
+            }
         }
+    }
+
+    if (showTemplateEditor) {
+        var prefix by remember { mutableStateOf(template.prefix) }
+        var footer by remember { mutableStateOf(template.footer) }
+        AlertDialog(
+            onDismissRequest = { showTemplateEditor = false },
+            title = { Text("Commit template") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "Applied automatically whenever you tap Generate. Leave either blank to skip it.",
+                        style = MaterialTheme.typography.bodySmall, color = StatusClean,
+                    )
+                    OutlinedTextField(
+                        value = prefix, onValueChange = { prefix = it },
+                        label = { Text("Prefix") },
+                        placeholder = { Text("e.g. \"[PROJ-123] \"") },
+                        singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = footer, onValueChange = { footer = it },
+                        label = { Text("Footer") },
+                        placeholder = { Text("e.g. \"Signed-off-by: you@example.com\"") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            },
+            confirmButton = { TextButton(onClick = { onSaveTemplate(prefix, footer); showTemplateEditor = false }) { Text("Save") } },
+            dismissButton = { TextButton(onClick = { showTemplateEditor = false }) { Text("Cancel") } },
+        )
     }
 }
 
 @Composable
 fun ConfirmDialog(title: String, body: String, confirmLabel: String, danger: Boolean = false, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
     AlertDialog(onDismissRequest = onDismiss, title = { Text(title) }, text = { Text(body) },
-        confirmButton = { TextButton(onClick = onConfirm) { Text(confirmLabel, color = if (danger) StatusDeleted else MaterialTheme.colorScheme.primary) } },
+        confirmButton = {
+            TextButton(onClick = {
+                // A confirm-dialog tap is the one moment in the app where the person is
+                // deliberately committing to something they can't casually undo (reset
+                // hard, force push, drop a stash) — a firm haptic here is confirmation
+                // the tap actually registered, on top of the dialog closing.
+                haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                onConfirm()
+            }) { Text(confirmLabel, color = if (danger) StatusDeleted else MaterialTheme.colorScheme.primary) }
+        },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
 }
 

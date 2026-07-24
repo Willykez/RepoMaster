@@ -39,7 +39,7 @@ import com.willykez.repomaster.ui.theme.StatusClean
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SearchScreen(repoId: Long, onBack: () -> Unit, onOpenResult: (path: String, line: Int) -> Unit, vm: SearchViewModel = viewModel()) {
+fun SearchScreen(repoId: Long, onBack: () -> Unit, onOpenResult: (repoId: Long, path: String, line: Int) -> Unit, vm: SearchViewModel = viewModel()) {
     val state by vm.state.collectAsState()
     val snack = remember { SnackbarHostState() }
 
@@ -49,7 +49,12 @@ fun SearchScreen(repoId: Long, onBack: () -> Unit, onOpenResult: (path: String, 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Search ${state.repo?.name.orEmpty()}", fontWeight = FontWeight.SemiBold, maxLines = 1) },
+                title = {
+                    Text(
+                        if (state.scopeAllRepos) "Search all repos" else "Search ${state.repo?.name.orEmpty()}",
+                        fontWeight = FontWeight.SemiBold, maxLines = 1,
+                    )
+                },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
             )
         },
@@ -59,7 +64,7 @@ fun SearchScreen(repoId: Long, onBack: () -> Unit, onOpenResult: (path: String, 
             OutlinedTextField(
                 value = state.query,
                 onValueChange = vm::onQueryChanged,
-                placeholder = { Text("Search across every file…") },
+                placeholder = { Text(if (state.scopeAllRepos) "Search across every repo…" else "Search across every file…") },
                 singleLine = true,
                 leadingIcon = { Icon(Icons.Filled.Search, null) },
                 trailingIcon = {
@@ -88,6 +93,19 @@ fun SearchScreen(repoId: Long, onBack: () -> Unit, onOpenResult: (path: String, 
                 }
             }
 
+            // Only worth showing if there's actually more than one repo to widen into — a
+            // toggle that always does the same thing as leaving it off is just clutter.
+            if (state.allRepos.size > 1) {
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth().clickable { vm.onScopeAllReposChanged(!state.scopeAllRepos) },
+                ) {
+                    Checkbox(checked = state.scopeAllRepos, onCheckedChange = vm::onScopeAllReposChanged)
+                    Text("Search all ${state.allRepos.size} repos", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+
             if (state.truncated) {
                 Spacer(Modifier.height(4.dp))
                 Text(
@@ -102,11 +120,15 @@ fun SearchScreen(repoId: Long, onBack: () -> Unit, onOpenResult: (path: String, 
                 state.isSearching -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
                 }
-                !state.hasSearched -> EmptyState(Icons.Filled.Search, "Search this repo's files by content")
+                !state.hasSearched -> EmptyState(Icons.Filled.Search, if (state.scopeAllRepos) "Search every tracked repo by content" else "Search this repo's files by content")
                 state.results.isEmpty() -> EmptyState(Icons.Filled.SearchOff, "No matches for \"${state.query}\"")
                 else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    items(state.results, key = { "${it.relativePath}:${it.lineNumber}:${it.matchStart}" }) { match ->
-                        ResultRow(match = match, query = state.query, onClick = { onOpenResult(match.relativePath, match.lineNumber) })
+                    items(state.results, key = { "${it.repoId}:${it.relativePath}:${it.lineNumber}:${it.matchStart}" }) { match ->
+                        ResultRow(
+                            match = match,
+                            showRepoName = state.scopeAllRepos,
+                            onClick = { onOpenResult(match.repoId, match.relativePath, match.lineNumber) },
+                        )
                     }
                 }
             }
@@ -128,14 +150,14 @@ private fun EmptyState(icon: androidx.compose.ui.graphics.vector.ImageVector, te
 }
 
 @Composable
-private fun ResultRow(match: SearchMatch, query: String, onClick: () -> Unit) {
+private fun ResultRow(match: SearchMatch, showRepoName: Boolean, onClick: () -> Unit) {
     GlassCard(Modifier.fillMaxWidth().clickable(onClick = onClick), accent = CommandBlue) {
         Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Filled.InsertDriveFile, null, Modifier.size(14.dp), tint = StatusClean)
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    match.relativePath,
+                    if (showRepoName) "${match.repoName}/${match.relativePath}" else match.relativePath,
                     style = MaterialTheme.typography.labelSmall,
                     color = StatusClean,
                     maxLines = 1,

@@ -10,6 +10,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -26,6 +27,8 @@ private const val MAX_RESULTS = 300
 private const val MAX_FILES_SCANNED = 20_000
 
 data class SearchMatch(
+    val repoId: Long,
+    val repoName: String,
     val relativePath: String,
     val lineNumber: Int,
     val lineText: String,
@@ -35,6 +38,8 @@ data class SearchMatch(
 
 data class SearchUiState(
     val repo: RepoEntity? = null,
+    val allRepos: List<RepoEntity> = emptyList(),
+    val scopeAllRepos: Boolean = false,
     val query: String = "",
     val caseSensitive: Boolean = false,
     val isSearching: Boolean = false,
@@ -48,7 +53,11 @@ data class SearchUiState(
  * Full-text search across every text file in a repo's working copy — separate from the
  * editor's find-in-file (which only ever looked inside whatever single file was already
  * open). This is the "which file even has this string in it" question, answered by walking
- * the whole checkout on disk rather than one open buffer.
+ * the checkout(s) on disk rather than one open buffer.
+ *
+ * Defaults to the repo you opened it from, but [scopeAllRepos] widens the same scan to every
+ * repo tracked in the app — genuinely useful for "which project was that snippet even in,"
+ * which single-repo search can't answer at all.
  */
 class SearchViewModel(app: Application) : AndroidViewModel(app) {
     private val appRef = app as App
@@ -62,17 +71,20 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
     fun load(repoId: Long) {
         viewModelScope.launch {
             val repo = repoRepo.getById(repoId) ?: return@launch
-            _state.value = _state.value.copy(repo = repo)
+            val all = repoRepo.allRepos.first()
+            _state.value = _state.value.copy(repo = repo, allRepos = all)
         }
     }
 
     fun onQueryChanged(q: String) { _state.value = _state.value.copy(query = q) }
     fun onCaseSensitiveChanged(v: Boolean) { _state.value = _state.value.copy(caseSensitive = v) }
+    fun onScopeAllReposChanged(v: Boolean) { _state.value = _state.value.copy(scopeAllRepos = v) }
 
     fun search() {
-        val repo = _state.value.repo ?: return
         val query = _state.value.query
         if (query.isBlank()) return
+        val reposToSearch = if (_state.value.scopeAllRepos) _state.value.allRepos else listOfNotNull(_state.value.repo)
+        if (reposToSearch.isEmpty()) return
 
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
@@ -80,7 +92,19 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
             val caseSensitive = _state.value.caseSensitive
 
             val (results, truncated) = withContext(Dispatchers.IO) {
-                scan(File(repo.fullSavePath), query, caseSensitive)
+                val allResults = mutableListOf<SearchMatch>()
+                var anyTruncated = false
+                for (repo in reposToSearch) {
+                    // Each repo gets its own full budget rather than splitting MAX_RESULTS
+                    // across however many repos are tracked — searching 2 repos shouldn't
+                    // give each half the results a single-repo search would. The combined
+                    // list is what actually gets capped for display just below.
+                    val (repoResults, repoTruncated) = scan(File(repo.fullSavePath), query, caseSensitive, repo.id, repo.name)
+                    allResults += repoResults
+                    if (repoTruncated) anyTruncated = true
+                }
+                val capped = allResults.take(MAX_RESULTS)
+                capped to (anyTruncated || allResults.size > MAX_RESULTS)
             }
 
             _state.value = _state.value.copy(isSearching = false, results = results, truncated = truncated)
@@ -92,10 +116,12 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         _state.value = _state.value.copy(isSearching = false)
     }
 
-    /** Walks the working copy depth-first, skipping `.git`, matching line-by-line in every
-     *  text file it can safely read. Returns early — with [truncated] set — the moment either
-     *  cap is hit, so a huge or deeply-nested repo can't turn this into a multi-minute scan. */
-    private suspend fun scan(root: File, query: String, caseSensitive: Boolean): Pair<List<SearchMatch>, Boolean> {
+    /** Walks one repo's working copy depth-first, skipping `.git`, matching line-by-line in
+     *  every text file it can safely read. Returns early — with truncated=true — the moment
+     *  either cap is hit, so a huge or deeply-nested repo can't turn this into a multi-minute
+     *  scan (a concern that only compounds once cross-repo search can be scanning several
+     *  working copies back to back). */
+    private suspend fun scan(root: File, query: String, caseSensitive: Boolean, repoId: Long, repoName: String): Pair<List<SearchMatch>, Boolean> {
         val results = mutableListOf<SearchMatch>()
         var filesScanned = 0
         var truncated = false
@@ -130,6 +156,8 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
                         val start = (matchIndex - leadingTrim).coerceAtLeast(0)
                         results.add(
                             SearchMatch(
+                                repoId = repoId,
+                                repoName = repoName,
                                 relativePath = relativePath,
                                 lineNumber = index + 1,
                                 lineText = rawLine.trim(),

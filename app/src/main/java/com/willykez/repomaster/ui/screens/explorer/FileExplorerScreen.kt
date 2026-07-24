@@ -556,9 +556,19 @@ private fun FileRow(
     onBlame: () -> Unit,
 ) {
     var showMenu by remember { mutableStateOf(false) }
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
 
     GlassCard(
-        modifier = Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = onLongClick),
+        modifier = Modifier.fillMaxWidth().combinedClickable(
+            onClick = onClick,
+            onLongClick = {
+                // The long-press that kicks off multi-select is otherwise silent — no visual
+                // change happens until the checkbox row appears a frame later — so this is
+                // the one spot in the file list a tactile confirmation earns its keep.
+                haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                onLongClick()
+            },
+        ),
         accent = if (selected) Amber else if (node.isDirectory) CommandBlue else MaterialTheme.colorScheme.outline,
     ) {
         Row(

@@ -359,7 +359,7 @@ private fun RepoMasterNavHost(
             com.willykez.repomaster.ui.screens.search.SearchScreen(
                 repoId = id,
                 onBack = { nav.popBackStack() },
-                onOpenResult = { path, line -> nav.navigate(Routes.editor(id, path, line)) },
+                onOpenResult = { resultRepoId, path, line -> nav.navigate(Routes.editor(resultRepoId, path, line)) },
             )
         }
     }

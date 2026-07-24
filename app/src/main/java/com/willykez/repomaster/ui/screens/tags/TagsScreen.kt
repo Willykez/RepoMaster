@@ -22,7 +22,6 @@ import com.willykez.repomaster.App
 import com.willykez.repomaster.git.GitEngine
 import com.willykez.repomaster.git.GitResult
 import com.willykez.repomaster.git.TagInfo
-import com.willykez.repomaster.ui.screens.changes.ConfirmDialog
 import com.willykez.repomaster.ui.components.GlassCard
 import com.willykez.repomaster.ui.theme.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -34,6 +33,7 @@ import org.eclipse.jgit.api.Git
 data class TagsUiState(
     val tags: List<TagInfo> = emptyList(),
     val isLoading: Boolean = true, val isWorking: Boolean = false, val message: String? = null,
+    val canUndoDelete: Boolean = false,
 )
 
 class TagsViewModel(app: Application) : AndroidViewModel(app) {
@@ -44,6 +44,7 @@ class TagsViewModel(app: Application) : AndroidViewModel(app) {
     val state: StateFlow<TagsUiState> = _state.asStateFlow()
     private var git: Git? = null
     private var repoId: Long = -1
+    private var lastDeletedTag: Pair<String, String>? = null // name to SHA, for undo
 
     fun load(id: Long) {
         repoId = id
@@ -71,9 +72,24 @@ class TagsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun deleteTag(name: String) = op { g ->
+    /** Instant delete, no confirm dialog — a tag is just a named pointer at a commit, and
+     *  [TagInfo.sha] already gives us that commit, so an undo snackbar can genuinely restore
+     *  it. (Recreated as a lightweight tag even if the original was annotated — the message
+     *  text itself isn't retained anywhere to restore, only the target commit is.) */
+    fun deleteTag(name: String, sha: String) = op { g ->
         when (val r = GitEngine.deleteTag(g, name)) {
-            is GitResult.Success -> ok("Deleted tag $name")
+            is GitResult.Success -> {
+                lastDeletedTag = name to sha
+                _state.value = _state.value.copy(message = "Deleted tag $name", canUndoDelete = true)
+            }
+            is GitResult.Error -> err(r.message)
+        }
+    }
+
+    fun undoDeleteTag() = op { g ->
+        val (name, sha) = lastDeletedTag ?: return@op
+        when (val r = GitEngine.createTag(g, name, targetSha = sha)) {
+            is GitResult.Success -> { lastDeletedTag = null; ok("Restored tag $name") }
             is GitResult.Error -> err(r.message)
         }
     }
@@ -87,7 +103,7 @@ class TagsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun dismiss() { _state.value = _state.value.copy(message = null) }
+    fun dismiss() { _state.value = _state.value.copy(message = null, canUndoDelete = false) }
     private fun err(m: String) { _state.value = _state.value.copy(message = m, isLoading = false, isWorking = false) }
     private fun ok(m: String) { _state.value = _state.value.copy(message = m) }
     private fun op(block: suspend (Git) -> Unit) {
@@ -103,12 +119,20 @@ fun TagsScreen(repoId: Long, onBack: () -> Unit, vm: TagsViewModel = viewModel()
     val state by vm.state.collectAsState()
     val snack = remember { SnackbarHostState() }
     var showCreate by remember { mutableStateOf(false) }
-    var tagToDelete by remember { mutableStateOf<TagInfo?>(null) }
     var newTagName by remember { mutableStateOf("") }
     var newTagMsg by remember { mutableStateOf("") }
 
     LaunchedEffect(repoId) { vm.load(repoId) }
-    LaunchedEffect(state.message) { state.message?.let { snack.showSnackbar(it); vm.dismiss() } }
+    LaunchedEffect(state.message) {
+        val msg = state.message ?: return@LaunchedEffect
+        if (state.canUndoDelete) {
+            val result = snack.showSnackbar(msg, actionLabel = "Undo", duration = SnackbarDuration.Long)
+            if (result == SnackbarResult.ActionPerformed) vm.undoDeleteTag()
+        } else {
+            snack.showSnackbar(msg)
+        }
+        vm.dismiss()
+    }
 
     Scaffold(
         topBar = {
@@ -139,7 +163,7 @@ fun TagsScreen(repoId: Long, onBack: () -> Unit, vm: TagsViewModel = viewModel()
         } else {
             LazyColumn(Modifier.fillMaxSize().padding(pad), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 items(state.tags, key = { it.name }) { t ->
-                    TagRow(t, onDelete = { tagToDelete = t })
+                    TagRow(t, onDelete = { vm.deleteTag(t.name, t.sha) })
                 }
             }
         }
@@ -156,11 +180,6 @@ fun TagsScreen(repoId: Long, onBack: () -> Unit, vm: TagsViewModel = viewModel()
             },
             confirmButton = { TextButton(onClick = { vm.createTag(newTagName, newTagMsg); showCreate = false; newTagName = ""; newTagMsg = "" }) { Text("Create") } },
             dismissButton = { TextButton(onClick = { showCreate = false }) { Text("Cancel") } })
-    }
-
-    tagToDelete?.let { t ->
-        ConfirmDialog("Delete tag ${t.name}?", "This cannot be undone. Remote tags must be deleted separately.", "Delete", danger = true,
-            onConfirm = { vm.deleteTag(t.name); tagToDelete = null }, onDismiss = { tagToDelete = null })
     }
 }
 

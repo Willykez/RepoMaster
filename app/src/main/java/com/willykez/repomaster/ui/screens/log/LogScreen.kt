@@ -33,6 +33,7 @@ import com.willykez.repomaster.git.GitResult
 import com.willykez.repomaster.ui.components.GlassCard
 import com.willykez.repomaster.ui.components.RepoTitleBlock
 import com.willykez.repomaster.ui.theme.*
+import androidx.compose.ui.graphics.Color
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -204,12 +205,26 @@ private fun CommitRow(c: CommitInfo, graphRow: GraphRowLayout?, onClick: () -> U
 
 private val GRAPH_LANE_WIDTH = 18.dp
 
+/** Cycles through the app's existing 3-color accent system rather than introducing new hues —
+ *  a lane's color has no persistent meaning across a repo's whole history anyway (lane 0 today
+ *  isn't "the same branch" as lane 0 a hundred commits back once branches fork and merge), so
+ *  what matters is that adjacent, currently-diverging lanes read as visually distinct, not
+ *  that any specific color maps to any specific named branch. */
+private val LANE_PALETTE = listOf(CommandBlue, Amber, Emerald)
+private fun laneColor(lane: Int): Color = LANE_PALETTE[lane % LANE_PALETTE.size]
+
 /**
  * Draws this commit's lane dot, an incoming line from the row above (if one is expected to
  * continue into this same lane), and outgoing lines to each parent's lane at the bottom of
  * the row. Each row only ever draws to its own top/bottom edge, which is what keeps lines
  * visually continuous across independently-measured LazyColumn items without needing one
  * giant shared canvas for the whole list.
+ *
+ * The dot and the incoming line both use this row's own lane color. Each outgoing line to a
+ * parent is colored by *that parent's* lane instead — the segment is "arriving into" that
+ * lane, which is what makes a merge commit read correctly at a glance: the line forking off
+ * to the side into another lane takes on that other lane's color rather than staying the
+ * current row's color the whole way down.
  */
 @Composable
 private fun CommitGraphLane(row: GraphRowLayout?, modifier: Modifier = Modifier) {
@@ -218,6 +233,7 @@ private fun CommitGraphLane(row: GraphRowLayout?, modifier: Modifier = Modifier)
         return
     }
     val laneCount = row.laneCount.coerceAtLeast(1)
+    val myColor = laneColor(row.lane)
     Canvas(modifier = modifier.width(GRAPH_LANE_WIDTH * laneCount)) {
         val laneWidthPx = GRAPH_LANE_WIDTH.toPx()
         val centerY = size.height / 2f
@@ -225,12 +241,12 @@ private fun CommitGraphLane(row: GraphRowLayout?, modifier: Modifier = Modifier)
         val strokeWidth = 3.dp.toPx()
 
         if (row.hasIncoming) {
-            drawLine(Amber, Offset(myX, 0f), Offset(myX, centerY), strokeWidth = strokeWidth)
+            drawLine(myColor, Offset(myX, 0f), Offset(myX, centerY), strokeWidth = strokeWidth)
         }
         row.parentLanes.forEach { parentLane ->
             val parentX = parentLane * laneWidthPx + laneWidthPx / 2f
-            drawLine(Amber, Offset(myX, centerY), Offset(parentX, size.height), strokeWidth = strokeWidth)
+            drawLine(laneColor(parentLane), Offset(myX, centerY), Offset(parentX, size.height), strokeWidth = strokeWidth)
         }
-        drawCircle(Amber, radius = 5.dp.toPx(), center = Offset(myX, centerY))
+        drawCircle(myColor, radius = 5.dp.toPx(), center = Offset(myX, centerY))
     }
 }

@@ -20,7 +20,6 @@ import com.willykez.repomaster.App
 import com.willykez.repomaster.git.GitEngine
 import com.willykez.repomaster.git.GitResult
 import com.willykez.repomaster.git.RemoteInfo
-import com.willykez.repomaster.ui.screens.changes.ConfirmDialog
 import com.willykez.repomaster.ui.components.GlassCard
 import com.willykez.repomaster.ui.theme.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,6 +31,7 @@ import org.eclipse.jgit.api.Git
 data class RemoteUiState(
     val remotes: List<RemoteInfo> = emptyList(),
     val isLoading: Boolean = true, val isWorking: Boolean = false, val message: String? = null,
+    val canUndoDelete: Boolean = false,
 )
 
 class RemoteViewModel(app: Application) : AndroidViewModel(app) {
@@ -39,6 +39,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     private val _state = MutableStateFlow(RemoteUiState())
     val state: StateFlow<RemoteUiState> = _state.asStateFlow()
     private var git: Git? = null
+    private var lastRemoved: RemoteInfo? = null // for undo — a remote is just name+URL, trivial to re-add
 
     fun load(repoId: Long) {
         viewModelScope.launch {
@@ -65,9 +66,22 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun removeRemote(name: String) = op { g ->
-        when (val r = GitEngine.removeRemote(g, name)) {
-            is GitResult.Success -> ok("Removed remote $name")
+    /** Instant delete, no confirm dialog — a remote is nothing but a name and a URL, both
+     *  already in hand from the list, so undoing this is just re-adding it verbatim. */
+    fun removeRemote(remote: RemoteInfo) = op { g ->
+        when (val r = GitEngine.removeRemote(g, remote.name)) {
+            is GitResult.Success -> {
+                lastRemoved = remote
+                _state.value = _state.value.copy(message = "Removed remote ${remote.name}", canUndoDelete = true)
+            }
+            is GitResult.Error -> err(r.message)
+        }
+    }
+
+    fun undoRemoveRemote() = op { g ->
+        val remote = lastRemoved ?: return@op
+        when (val r = GitEngine.addRemote(g, remote.name, remote.fetchUrl)) {
+            is GitResult.Success -> { lastRemoved = null; ok("Restored remote ${remote.name}") }
             is GitResult.Error -> err(r.message)
         }
     }
@@ -79,7 +93,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun dismiss() { _state.value = _state.value.copy(message = null) }
+    fun dismiss() { _state.value = _state.value.copy(message = null, canUndoDelete = false) }
     private fun err(m: String) { _state.value = _state.value.copy(message = m, isLoading = false, isWorking = false) }
     private fun ok(m: String) { _state.value = _state.value.copy(message = m) }
     private fun op(block: suspend (Git) -> Unit) {
@@ -95,13 +109,21 @@ fun RemoteScreen(repoId: Long, onBack: () -> Unit, vm: RemoteViewModel = viewMod
     val state by vm.state.collectAsState()
     val snack = remember { SnackbarHostState() }
     var showAdd by remember { mutableStateOf(false) }
-    var remoteToDelete by remember { mutableStateOf<RemoteInfo?>(null) }
     var remoteToEdit by remember { mutableStateOf<RemoteInfo?>(null) }
     var newName by remember { mutableStateOf("") }
     var newUrl by remember { mutableStateOf("") }
 
     LaunchedEffect(repoId) { vm.load(repoId) }
-    LaunchedEffect(state.message) { state.message?.let { snack.showSnackbar(it); vm.dismiss() } }
+    LaunchedEffect(state.message) {
+        val msg = state.message ?: return@LaunchedEffect
+        if (state.canUndoDelete) {
+            val result = snack.showSnackbar(msg, actionLabel = "Undo", duration = SnackbarDuration.Long)
+            if (result == SnackbarResult.ActionPerformed) vm.undoRemoveRemote()
+        } else {
+            snack.showSnackbar(msg)
+        }
+        vm.dismiss()
+    }
 
     Scaffold(
         topBar = {
@@ -126,7 +148,7 @@ fun RemoteScreen(repoId: Long, onBack: () -> Unit, vm: RemoteViewModel = viewMod
                     }
                 }
                 items(state.remotes, key = { it.name }) { r ->
-                    RemoteRow(r, onEdit = { remoteToEdit = r }, onDelete = { remoteToDelete = r })
+                    RemoteRow(r, onEdit = { remoteToEdit = r }, onDelete = { vm.removeRemote(r) })
                 }
             }
         }
@@ -152,12 +174,6 @@ fun RemoteScreen(repoId: Long, onBack: () -> Unit, vm: RemoteViewModel = viewMod
             text = { OutlinedTextField(value = editUrl, onValueChange = { editUrl = it }, label = { Text("URL") }, modifier = Modifier.fillMaxWidth()) },
             confirmButton = { TextButton(onClick = { vm.setUrl(r.name, editUrl); remoteToEdit = null }) { Text("Save") } },
             dismissButton = { TextButton(onClick = { remoteToEdit = null }) { Text("Cancel") } })
-    }
-
-    remoteToDelete?.let { r ->
-        ConfirmDialog("Remove ${r.name}?", "Remote '${r.name}' will be removed from this repo.", "Remove", danger = true,
-            onConfirm = { vm.removeRemote(r.name); remoteToDelete = null },
-            onDismiss = { remoteToDelete = null })
     }
 }
 

@@ -33,6 +33,8 @@ import org.eclipse.jgit.api.Git
 data class BranchesUiState(
     val repoName: String = "", val branches: List<BranchInfo> = emptyList(),
     val isLoading: Boolean = true, val isWorking: Boolean = false, val message: String? = null,
+    val canUndoDelete: Boolean = false,
+    val unmergedBranchPendingForce: String? = null,
 )
 
 class BranchesViewModel(app: Application) : AndroidViewModel(app) {
@@ -79,9 +81,41 @@ class BranchesViewModel(app: Application) : AndroidViewModel(app) {
         if (r is GitResult.Success) ok("Created $name") else err((r as GitResult.Error).message)
     }
 
+    private var lastDeletedBranch: Pair<String, String>? = null // name to SHA, for undo
+
+    /**
+     * Deletes immediately rather than gating behind a confirm dialog first — the SHA is
+     * captured beforehand specifically so [undoDeleteBranch] can genuinely restore it, which
+     * is what makes skipping the dialog safe here. The one case still gated is deleting a
+     * branch with unmerged commits: JGit refuses that without `force`, and this surfaces that
+     * refusal as an explicit "force delete?" prompt in the UI (previously it was just an
+     * opaque error message with no way to proceed).
+     */
     fun deleteBranch(name: String, force: Boolean = false) = op { g ->
-        val r = GitEngine.deleteBranch(g, name, force)
-        if (r is GitResult.Success) ok("Deleted $name") else err((r as GitResult.Error).message)
+        val sha = (GitEngine.resolveRef(g, "refs/heads/$name") as? GitResult.Success)?.data
+        when (val r = GitEngine.deleteBranch(g, name, force)) {
+            is GitResult.Success -> {
+                if (sha != null) lastDeletedBranch = name to sha
+                _state.value = _state.value.copy(message = "Deleted $name", canUndoDelete = sha != null, unmergedBranchPendingForce = null)
+            }
+            is GitResult.Error -> {
+                if (!force && r.message.contains("not merged", ignoreCase = true) || r.message.contains("not been merged", ignoreCase = true)) {
+                    _state.value = _state.value.copy(unmergedBranchPendingForce = name)
+                } else {
+                    err(r.message)
+                }
+            }
+        }
+    }
+
+    fun dismissForceDeletePrompt() { _state.value = _state.value.copy(unmergedBranchPendingForce = null) }
+
+    fun undoDeleteBranch() = op { g ->
+        val (name, sha) = lastDeletedBranch ?: return@op
+        when (val r = GitEngine.createBranch(g, name, sha)) {
+            is GitResult.Success -> { lastDeletedBranch = null; ok("Restored $name") }
+            is GitResult.Error -> err(r.message)
+        }
     }
 
     fun renameBranch(old: String, new: String) = op { g ->
@@ -105,7 +139,7 @@ class BranchesViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun dismiss() { _state.value = _state.value.copy(message = null) }
+    fun dismiss() { _state.value = _state.value.copy(message = null, canUndoDelete = false) }
 
     private fun op(block: suspend (Git) -> Unit) {
         val g = git ?: run { err("Repo not open"); return }
@@ -127,11 +161,19 @@ fun BranchesScreen(repoId: Long, onBack: () -> Unit, vm: BranchesViewModel = vie
     val state by vm.state.collectAsState()
     val snack = remember { SnackbarHostState() }
     var showCreate by remember { mutableStateOf(false) }
-    var branchToDelete by remember { mutableStateOf<BranchInfo?>(null) }
     var branchToRename by remember { mutableStateOf<BranchInfo?>(null) }
 
     LaunchedEffect(repoId) { vm.load(repoId) }
-    LaunchedEffect(state.message) { state.message?.let { snack.showSnackbar(it); vm.dismiss() } }
+    LaunchedEffect(state.message) {
+        val msg = state.message ?: return@LaunchedEffect
+        if (state.canUndoDelete) {
+            val result = snack.showSnackbar(msg, actionLabel = "Undo", duration = SnackbarDuration.Long)
+            if (result == SnackbarResult.ActionPerformed) vm.undoDeleteBranch()
+        } else {
+            snack.showSnackbar(msg)
+        }
+        vm.dismiss()
+    }
 
     Scaffold(
         topBar = {
@@ -161,7 +203,7 @@ fun BranchesScreen(repoId: Long, onBack: () -> Unit, vm: BranchesViewModel = vie
             LazyColumn(Modifier.fillMaxSize().padding(pad), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 item { SectionLabel("LOCAL (${local.size})") }
                 items(local, key = { it.fullRef }) { b ->
-                    BranchRow(b, onCheckout = { vm.checkout(b.name) }, onDelete = { branchToDelete = b },
+                    BranchRow(b, onCheckout = { vm.checkout(b.name) }, onDelete = { vm.deleteBranch(b.name) },
                         onRename = { branchToRename = b }, onMerge = { vm.mergeBranch(b.name) })
                 }
                 item { Spacer(Modifier.height(8.dp)); SectionLabel("REMOTE (${remote.size})") }
@@ -175,10 +217,16 @@ fun BranchesScreen(repoId: Long, onBack: () -> Unit, vm: BranchesViewModel = vie
 
     if (showCreate) SingleInputDialog("New Branch", "Branch name", "",
         onConfirm = { vm.createBranch(it); showCreate = false }, onDismiss = { showCreate = false })
-    branchToDelete?.let { b ->
-        ConfirmDialog("Delete ${b.name}?", "This action cannot be undone.", "Delete", danger = true,
-            onConfirm = { if (b.isRemote) vm.pushDeleteRemote(b.name) else vm.deleteBranch(b.name); branchToDelete = null },
-            onDismiss = { branchToDelete = null })
+    state.unmergedBranchPendingForce?.let { name ->
+        ConfirmDialog(
+            "Force delete $name?",
+            "$name has commits not merged into any other branch — deleting it normally was refused. " +
+                "Force deleting is still recoverable right after (via the Undo on the confirmation), " +
+                "but only if you catch it before those commits get garbage-collected.",
+            "Force delete", danger = true,
+            onConfirm = { vm.deleteBranch(name, force = true) },
+            onDismiss = { vm.dismissForceDeletePrompt() },
+        )
     }
     branchToRename?.let { b ->
         SingleInputDialog("Rename Branch", "New name", b.name,

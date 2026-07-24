@@ -28,6 +28,28 @@ data class DiffFileSection(
     val lines: List<DiffLine> = emptyList(),
 )
 
+/**
+ * Commit-message generator scoped to one file's actual diff, rather than just its status —
+ * the Changes screen's [com.willykez.repomaster.ui.screens.changes.buildCommitMessageSummary]
+ * only knows "this file is modified"; this additionally knows *how much* changed, which is
+ * worth surfacing when reviewing one file's diff specifically.
+ */
+fun buildDiffCommitMessage(section: DiffFileSection): String {
+    val name = section.displayPath.substringAfterLast('/')
+    val verb = when {
+        section.isNew -> "Add"
+        section.isDeleted -> "Remove"
+        section.isRenamed -> "Rename"
+        else -> "Update"
+    }
+    if (section.isBinary || section.isDeleted) return "$verb $name"
+    val stats = buildList {
+        if (section.additions > 0) add("+${section.additions}")
+        if (section.deletions > 0) add("-${section.deletions}")
+    }
+    return if (stats.isEmpty()) "$verb $name" else "$verb $name (${stats.joinToString("/")})"
+}
+
 private val DiffGitHeader = Regex("""^diff --git a/(.*) b/(.*)$""")
 private val HunkHeader = Regex("""^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@.*$""")
 

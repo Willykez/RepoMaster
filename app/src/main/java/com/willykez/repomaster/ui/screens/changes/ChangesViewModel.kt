@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.willykez.repomaster.App
+import com.willykez.repomaster.data.CommitPrefs
 import com.willykez.repomaster.data.db.entity.RepoEntity
 import com.willykez.repomaster.data.github.GitHubApi
 import com.willykez.repomaster.data.github.GitHubResult
@@ -11,12 +12,66 @@ import com.willykez.repomaster.data.github.WorkflowRun
 import com.willykez.repomaster.data.github.githubFullNameFromUrl
 import com.willykez.repomaster.git.GitEngine
 import com.willykez.repomaster.git.GitFileEntry
+import com.willykez.repomaster.git.GitFileStatus
 import com.willykez.repomaster.git.GitResult
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import org.eclipse.jgit.api.Git
+
+/**
+ * Heuristic commit message from a set of changed files — no network call, no AI, just the
+ * same information already visible in the Changes list, reworded into prose. For one file,
+ * names it directly ("Update FooScreen.kt"); for several, groups by status ("Update 3 files,
+ * add 1") and appends the files' common parent directory if they share one, since "in
+ * ui/screens/changes" is often more useful at a glance than the individual file list would be
+ * in a single-line commit title.
+ */
+fun buildCommitMessageSummary(entries: List<GitFileEntry>): String {
+    if (entries.isEmpty()) return ""
+
+    fun verb(status: GitFileStatus, plural: Boolean) = when (status) {
+        GitFileStatus.ADDED -> if (plural) "Add" else "Add"
+        GitFileStatus.MODIFIED -> "Update"
+        GitFileStatus.DELETED -> "Remove"
+        GitFileStatus.RENAMED -> "Rename"
+        GitFileStatus.TYPE_CHANGED -> "Change"
+        GitFileStatus.CONFLICTED -> "Resolve conflicts in"
+    }
+
+    if (entries.size == 1) {
+        val e = entries.first()
+        val name = e.path.substringAfterLast('/')
+        return "${verb(e.status, plural = false)} $name"
+    }
+
+    // Common parent directory across every changed file, if there is one — comparing path
+    // segments position-by-position rather than string prefixes, so "src/foo.kt" and
+    // "src2/bar.kt" correctly share nothing instead of falsely matching on "src".
+    val dirSegments = entries.map { it.path.substringBeforeLast('/', missingDelimiterValue = "").split('/').filter { s -> s.isNotEmpty() } }
+    val minDepth = dirSegments.minOf { it.size }
+    var commonDepth = 0
+    while (commonDepth < minDepth && dirSegments.all { it[commonDepth] == dirSegments.first()[commonDepth] }) commonDepth++
+    val commonDir = dirSegments.first().take(commonDepth).joinToString("/")
+
+    val counts = entries.groupingBy { it.status }.eachCount()
+    // A stable, most-significant-first order so the summary reads naturally regardless of
+    // which statuses happen to be present.
+    val order = listOf(
+        GitFileStatus.MODIFIED, GitFileStatus.ADDED, GitFileStatus.DELETED,
+        GitFileStatus.RENAMED, GitFileStatus.TYPE_CHANGED, GitFileStatus.CONFLICTED,
+    )
+    val parts = order.mapNotNull { status ->
+        val n = counts[status] ?: return@mapNotNull null
+        val word = verb(status, plural = n > 1).lowercase()
+        "$word $n file${if (n == 1) "" else "s"}"
+    }
+
+    var summary = parts.joinToString(", ").replaceFirstChar { it.uppercase() }
+    if (commonDir.isNotBlank()) summary += " in $commonDir"
+    return summary
+}
 
 data class ChangesUiState(
     val repo: RepoEntity? = null,
@@ -31,6 +86,12 @@ data class ChangesUiState(
     val isWorking: Boolean = false,
     val message: String? = null,
     val hasConflicts: Boolean = false,
+    val recentMessages: List<String> = emptyList(),
+    val commitTemplate: CommitPrefs.Template = CommitPrefs.Template(),
+    /** True once we know for sure the current branch has no remote-tracking branch set up —
+     *  null means "not checked yet", not "has upstream", so the nudge doesn't flash on then
+     *  off while the repo is still loading. */
+    val hasUpstream: Boolean? = null,
     /** Latest Actions run for this repo, if it has a GitHub remote and a token attached —
      *  null just means "not known yet / not applicable", not "no runs". */
     val ciRun: WorkflowRun? = null,
@@ -57,7 +118,11 @@ class ChangesViewModel(app: Application) : AndroidViewModel(app) {
         repoId = id
         viewModelScope.launch {
             val repo = repoRepo.getById(id) ?: return@launch
-            _state.value = _state.value.copy(repo = repo, isLoading = true)
+            _state.value = _state.value.copy(
+                repo = repo, isLoading = true,
+                recentMessages = CommitPrefs.recentMessages(appRef, id),
+                commitTemplate = CommitPrefs.template(appRef, id),
+            )
             openAndRefresh(repo)
             refreshCiStatus(repo)
         }
@@ -73,6 +138,7 @@ class ChangesViewModel(app: Application) : AndroidViewModel(app) {
 
         val branch = GitEngine.getCurrentBranch(g).getOrNull() ?: ""
         val ab = GitEngine.getAheadBehind(g).getOrNull() ?: Pair(0, 0)
+        val upstream = GitEngine.hasUpstream(g).getOrNull()
         val statusLine = buildStatusLine(g)
 
         when (val sr = GitEngine.getStatus(g)) {
@@ -82,7 +148,7 @@ class ChangesViewModel(app: Application) : AndroidViewModel(app) {
                 _state.value = _state.value.copy(
                     staged = stg, unstaged = unstg, isLoading = false,
                     currentBranch = branch, ahead = ab.first, behind = ab.second,
-                    statusLine = statusLine,
+                    statusLine = statusLine, hasUpstream = upstream,
                     hasConflicts = unstg.any { it.status == com.willykez.repomaster.git.GitFileStatus.CONFLICTED },
                 )
             }
@@ -122,8 +188,89 @@ class ChangesViewModel(app: Application) : AndroidViewModel(app) {
         if (_state.value.staged.isEmpty()) { err("Stage at least one file first"); return }
         gitOp { g ->
             val r = GitEngine.commit(g, msg, authorName(), "repomaster@local")
-            if (r is GitResult.Success) _state.value = _state.value.copy(commitMessage = "")
+            if (r is GitResult.Success) {
+                _state.value = _state.value.copy(commitMessage = "")
+                CommitPrefs.recordMessage(appRef, repoId, msg)
+                _state.value = _state.value.copy(recentMessages = CommitPrefs.recentMessages(appRef, repoId))
+            }
             r
+        }
+    }
+
+    /**
+     * Fills the commit message from whatever's actually changed — a heuristic summary, not
+     * an AI-written one, so it's instant and needs no network or credential. Prefers
+     * summarizing [staged] (what would actually be committed right now); falls back to
+     * [unstaged] only so there's still something to preview before Stage+Commit+Push, which
+     * stages everything first anyway.
+     */
+    fun generateCommitMessage() {
+        val entries = _state.value.staged.ifEmpty { _state.value.unstaged }
+        if (entries.isEmpty()) { err("No changes to summarize"); return }
+        val body = buildCommitMessageSummary(entries)
+        _state.value = _state.value.copy(commitMessage = _state.value.commitTemplate.apply(body))
+    }
+
+    /** Picks a message straight from history — no template re-application, since a message
+     *  pulled from history was already whatever it was when it got committed the first time. */
+    fun applyRecentMessage(message: String) { _state.value = _state.value.copy(commitMessage = message) }
+
+    fun setCommitTemplate(prefix: String, footer: String) {
+        val repo = _state.value.repo ?: return
+        CommitPrefs.setTemplate(appRef, repo.id, prefix, footer)
+        _state.value = _state.value.copy(commitTemplate = CommitPrefs.Template(prefix, footer))
+    }
+
+    /**
+     * One tap instead of three separate screens of taps: stages everything, commits with
+     * whatever's in the message box, then pushes — the common "just ship it" path when
+     * there's nothing to review file-by-file. Stops and reports at whichever step actually
+     * fails rather than assuming the whole chain succeeded; [openAndRefresh] still runs
+     * afterward either way so the file list reflects reality even on a partial failure
+     * (e.g. staged + committed locally, but the push itself failed).
+     */
+    fun stageCommitAndPush() {
+        val msg = _state.value.commitMessage
+        val repo = _state.value.repo
+        val g = git
+        if (repo == null || g == null) { err("Repo not open"); return }
+        if (_state.value.staged.isEmpty() && _state.value.unstaged.isEmpty()) { err("Nothing to commit"); return }
+        if (msg.isBlank()) { err("Write a commit message first — or tap Generate"); return }
+
+        viewModelScope.launch {
+            _state.value = _state.value.copy(isWorking = true)
+            var failure: String? = null
+
+            val stageResult = GitEngine.stageAll(g)
+            if (stageResult is GitResult.Error) failure = stageResult.message
+
+            if (failure == null) {
+                val commitResult = GitEngine.commit(g, msg, authorName(), "repomaster@local")
+                if (commitResult is GitResult.Error) failure = commitResult.message
+                else {
+                    _state.value = _state.value.copy(commitMessage = "")
+                    CommitPrefs.recordMessage(appRef, repoId, msg)
+                    _state.value = _state.value.copy(recentMessages = CommitPrefs.recentMessages(appRef, repoId))
+                }
+            }
+
+            if (failure == null) {
+                val cred = if (repo.credentialId != 0L) credRepo.getById(repo.credentialId) else null
+                when (val pushResult = GitEngine.push(g, credential = cred)) {
+                    is GitResult.Error -> {
+                        repoRepo.markError(repo.id, pushResult.message)
+                        failure = pushResult.message
+                    }
+                    is GitResult.Success -> {
+                        repoRepo.markSyncSuccess(repo.id)
+                        _state.value = _state.value.copy(pushSuccessTick = _state.value.pushSuccessTick + 1)
+                    }
+                }
+            }
+
+            openAndRefresh(repo)
+            refreshCiStatus(repo)
+            _state.value = _state.value.copy(isWorking = false, message = failure ?: _state.value.message)
         }
     }
 

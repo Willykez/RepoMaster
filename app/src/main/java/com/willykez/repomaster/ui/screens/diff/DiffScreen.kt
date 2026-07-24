@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.UnfoldLess
@@ -22,6 +23,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -94,6 +97,7 @@ fun DiffScreen(
 ) {
     val state by vm.state.collectAsState()
     val snack = remember { SnackbarHostState() }
+    val clipboard = LocalClipboardManager.current
     LaunchedEffect(repoId, encodedPath) { vm.load(repoId, encodedPath, stagedOrCommit) }
     LaunchedEffect(state.message) { state.message?.let { snack.showSnackbar(it); vm.dismiss() } }
 
@@ -129,6 +133,19 @@ fun DiffScreen(
                 },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, "Back") } },
                 actions = {
+                    // Only offered for a single-file working-tree diff — a commit diff is
+                    // already-history (nothing to write a message for), and the multi-file
+                    // case is exactly what the Changes screen's own Generate already covers.
+                    if (!isCommit && state.sections.size == 1) {
+                        val scope = rememberCoroutineScope()
+                        val section = state.sections.first()
+                        IconButton(onClick = {
+                            clipboard.setText(AnnotatedString(buildDiffCommitMessage(section)))
+                            scope.launch { snack.showSnackbar("Message copied — paste it into the commit box") }
+                        }) {
+                            Icon(Icons.Filled.ContentCopy, "Generate commit message from this diff")
+                        }
+                    }
                     if (isMultiFile) {
                         IconButton(onClick = {
                             collapsedIndices = if (allCollapsed) emptySet() else state.sections.indices.toSet()
