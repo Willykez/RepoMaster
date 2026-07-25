@@ -178,7 +178,7 @@ class ChangesViewModel(app: Application) : AndroidViewModel(app) {
         gitOp { g ->
             val r1 = GitEngine.stageAll(g)
             if (r1 is GitResult.Error) return@gitOp r1
-            GitEngine.commit(g, msg, authorName(), "repomaster@local")
+            GitEngine.commit(g, msg, authorName(), authorEmail())
         }
     }
 
@@ -187,7 +187,7 @@ class ChangesViewModel(app: Application) : AndroidViewModel(app) {
         if (msg.isBlank()) { err("Write a commit message first"); return }
         if (_state.value.staged.isEmpty()) { err("Stage at least one file first"); return }
         gitOp { g ->
-            val r = GitEngine.commit(g, msg, authorName(), "repomaster@local")
+            val r = GitEngine.commit(g, msg, authorName(), authorEmail())
             if (r is GitResult.Success) {
                 _state.value = _state.value.copy(commitMessage = "")
                 CommitPrefs.recordMessage(appRef, repoId, msg)
@@ -245,7 +245,7 @@ class ChangesViewModel(app: Application) : AndroidViewModel(app) {
             if (stageResult is GitResult.Error) failure = stageResult.message
 
             if (failure == null) {
-                val commitResult = GitEngine.commit(g, msg, authorName(), "repomaster@local")
+                val commitResult = GitEngine.commit(g, msg, authorName(), authorEmail())
                 if (commitResult is GitResult.Error) failure = commitResult.message
                 else {
                     _state.value = _state.value.copy(commitMessage = "")
@@ -276,12 +276,12 @@ class ChangesViewModel(app: Application) : AndroidViewModel(app) {
 
     fun amendCommit(newMessage: String) {
         if (newMessage.isBlank()) { err("Message required"); return }
-        gitOp { g -> GitEngine.commit(g, newMessage, authorName(), "repomaster@local", amend = true) }
+        gitOp { g -> GitEngine.commit(g, newMessage, authorName(), authorEmail(), amend = true) }
     }
 
     fun squash(n: Int, message: String) {
         if (message.isBlank()) { err("Write a commit message first"); return }
-        gitOp { g -> GitEngine.squashLastN(g, n, message, authorName(), "repomaster@local") }
+        gitOp { g -> GitEngine.squashLastN(g, n, message, authorName(), authorEmail()) }
     }
 
     fun cherryPick(sha: String) {
@@ -337,11 +337,8 @@ class ChangesViewModel(app: Application) : AndroidViewModel(app) {
      * after a clipboard action) that don't come from a git operation result. */
     fun showTransientMessage(msg: String) { _state.value = _state.value.copy(message = msg) }
 
-    private fun authorName(): String {
-        return _state.value.repo?.let { r ->
-            if (r.credentialId != 0L) null else null
-        } ?: "Repo Master"
-    }
+    private fun authorName(): String = com.willykez.repomaster.data.GitIdentityPrefs.currentName(appRef)
+    private fun authorEmail(): String = com.willykez.repomaster.data.GitIdentityPrefs.currentEmail(appRef)
 
     private fun gitOp(block: suspend (Git) -> GitResult<*>) {
         val g = git ?: run { err("Repo not open"); return }

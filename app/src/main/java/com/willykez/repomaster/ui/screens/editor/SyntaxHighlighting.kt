@@ -1,5 +1,6 @@
 package com.willykez.repomaster.ui.screens.editor
 
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontStyle
@@ -7,6 +8,7 @@ import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
 import com.willykez.repomaster.ui.theme.SyntaxColorSet
+import kotlinx.coroutines.delay
 
 /**
  * Which family of highlighting rules applies to a file, inferred from its
@@ -176,18 +178,41 @@ fun highlightText(text: String, lang: CodeLanguage, colors: SyntaxColorSet): Ann
 }
 
 /**
- * Wraps [highlightText] as a [VisualTransformation] so it can drop straight
- * into a BasicTextField/OutlinedTextField's `visualTransformation` param —
- * this only changes how the text *renders*, the underlying edited string
- * and cursor position are untouched (offsets map 1:1, since highlighting
- * never inserts/removes characters).
+ * Wraps a debounced, background-computed highlight result as a [VisualTransformation] —
+ * see [rememberHighlightedText] for where the actual regex work happens. `filter()` itself
+ * does no computation: it just compares the cached result's raw text against what's
+ * currently in the field. On a match (the common case once the debounce settles) it returns
+ * the cached, styled version; on a mismatch (a keystroke landed since the cache was built)
+ * it falls back to plain, unstyled text instantly rather than blocking the keystroke on a
+ * fresh regex pass. Offsets are always 1:1 either way, since highlighting never
+ * inserts/removes characters.
  */
-class SyntaxHighlightTransformation(
-    private val lang: CodeLanguage,
-    private val colors: SyntaxColorSet,
-) : VisualTransformation {
+class CachedHighlightTransformation(private val highlighted: androidx.compose.runtime.State<AnnotatedString>) : VisualTransformation {
     override fun filter(text: AnnotatedString): TransformedText {
-        val highlighted = highlightText(text.text, lang, colors)
-        return TransformedText(highlighted, OffsetMapping.Identity)
+        val cached = highlighted.value
+        val result = if (cached.text == text.text) cached else AnnotatedString(text.text)
+        return TransformedText(result, OffsetMapping.Identity)
     }
 }
+
+/**
+ * Runs [highlightText] on a background thread, debounced, rather than synchronously inside
+ * [VisualTransformation.filter] on the UI thread. Two things this fixes at once:
+ *
+ * - **Opening a file no longer stalls the first frame.** The initial value here is plain,
+ *   unhighlighted text (returned instantly, since wrapping a string costs nothing) — the
+ *   editor renders and becomes scrollable/typeable immediately, and colors "pop in" a beat
+ *   later once the background pass finishes. Previously the very first composition blocked
+ *   on a full-file regex scan before anything could draw at all.
+ * - **Typing in a large file stays smooth.** Every keystroke used to re-run every regex rule
+ *   over the entire file, synchronously, before that keystroke could even render. Debouncing
+ *   (`delay(120)`, restarted by `produceState` whenever [text] changes) coalesces a burst of
+ *   fast typing into one recompute after you pause, instead of one recompute per character.
+ */
+@Composable
+fun rememberHighlightedText(text: String, lang: CodeLanguage, colors: SyntaxColorSet): androidx.compose.runtime.State<AnnotatedString> =
+    androidx.compose.runtime.produceState(initialValue = AnnotatedString(text), text, lang, colors) {
+        delay(120)
+        value = withContext(kotlinx.coroutines.Dispatchers.Default) { highlightText(text, lang, colors) }
+    }
+

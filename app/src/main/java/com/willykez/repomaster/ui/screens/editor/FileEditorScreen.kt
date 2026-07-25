@@ -248,6 +248,10 @@ fun FileEditorScreen(
     val editorScrollState = rememberScrollState()
     val density = LocalDensity.current
     val coroutineScope = rememberCoroutineScope()
+    // Captured here (composable scope) rather than read inside the LaunchedEffect blocks
+    // below, since currentEditorLineHeight() is itself @Composable and those blocks aren't —
+    // this keeps the jump-to-line math in sync with whatever text size Settings has set.
+    val lineHeight = currentEditorLineHeight()
 
     LaunchedEffect(repoId, relativePath) { vm.load(repoId, relativePath) }
     LaunchedEffect(state.message) {
@@ -262,7 +266,7 @@ fun FileEditorScreen(
         if (!state.isLoading && !state.isBinaryOrTooLarge && initialLine != null && initialLine >= 1) {
             val offset = offsetForLineCol(state.text.text, initialLine, 1)
             vm.moveCursorTo(offset)
-            val targetPx = with(density) { (EditorLineHeight.toPx() * (initialLine - 1) - 80).coerceAtLeast(0f) }
+            val targetPx = with(density) { (lineHeight.toPx() * (initialLine - 1) - 80).coerceAtLeast(0f) }
             editorScrollState.animateScrollTo(targetPx.toInt())
         }
     }
@@ -393,7 +397,7 @@ fun FileEditorScreen(
                         val offset = offsetForLineCol(state.text.text, line, col)
                         vm.moveCursorTo(offset)
                         coroutineScope.launch {
-                            val targetPx = with(density) { (EditorLineHeight.toPx() * (line - 1) - 80).coerceAtLeast(0f) }
+                            val targetPx = with(density) { (lineHeight.toPx() * (line - 1) - 80).coerceAtLeast(0f) }
                             editorScrollState.animateScrollTo(targetPx.toInt())
                         }
                     }

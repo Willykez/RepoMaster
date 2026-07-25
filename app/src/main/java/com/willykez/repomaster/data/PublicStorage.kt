@@ -76,6 +76,21 @@ object PublicStorage {
      * public folder above. On Android 10 and below this is always true here
      * (classic WRITE_EXTERNAL_STORAGE, requested separately, covers it).
      */
+    /** The overall `.RepoMaster` root — parent of both `repos/` and `apk-downloads/`.
+     *  Doesn't create it (unlike [reposRootDir]/[apkDownloadsDir]) since this is purely
+     *  informational, e.g. showing the path in Settings; nothing should force-create the
+     *  root folder just by looking at where it *would* be. */
+    fun rootDir(): File = File(Environment.getExternalStorageDirectory(), FOLDER_NAME)
+
+    /** Parent of every per-repo APK downloads subfolder — used by Settings to show total
+     *  size and offer a "clear all" that doesn't require iterating tracked repos first. */
+    fun apkDownloadsRootDir(): File = File(rootDir(), "apk-downloads")
+
+    fun directorySizeBytes(dir: File): Long {
+        if (!dir.exists()) return 0L
+        return dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+    }
+
     fun hasStorageAccess(context: Context): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             Environment.isExternalStorageManager()

@@ -494,10 +494,17 @@ private fun ToolGroup(
 
 @Composable
 private fun ToolRow(label: String, icon: ImageVector, danger: Boolean = false, onClick: () -> Unit) {
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
     Row(
         Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .clickable(onClick = {
+                // Danger rows here are the sheet's equivalents of a force-push/reset-hard —
+                // a firm haptic on tap matches the same one used in ConfirmDialog's confirm
+                // button elsewhere, so risky taps feel consistent app-wide.
+                if (danger) haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                onClick()
+            })
             .padding(horizontal = 14.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -655,6 +662,8 @@ private fun CommitBar(
     var scope by remember { mutableStateOf(currentMatch?.groupValues?.get(3) ?: "") }
     var showHistory by remember { mutableStateOf(false) }
     var showTemplateEditor by remember { mutableStateOf(false) }
+    var showMoreOptions by remember { mutableStateOf(false) }
+    val hasTemplate = template.prefix.isNotBlank() || template.footer.isNotBlank()
 
     fun applyType(type: String?) {
         val body = if (currentMatch != null) message.substring(currentMatch.range.last + 1) else message
@@ -668,30 +677,6 @@ private fun CommitBar(
 
     Surface(tonalElevation = 8.dp, shadowElevation = 8.dp) {
         Column(Modifier.fillMaxWidth().imePadding().padding(12.dp)) {
-            Row(
-                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                COMMIT_TYPES.forEach { type ->
-                    FilterChip(
-                        selected = currentType == type,
-                        onClick = { applyType(if (currentType == type) null else type) },
-                        label = { Text(type, style = MaterialTheme.typography.labelSmall) },
-                    )
-                }
-            }
-            if (currentType != null) {
-                Spacer(Modifier.height(6.dp))
-                OutlinedTextField(
-                    value = scope,
-                    onValueChange = { scope = it; applyType(currentType) },
-                    label = { Text("Scope (optional)") },
-                    singleLine = true,
-                    textStyle = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-            Spacer(Modifier.height(8.dp))
             OutlinedTextField(
                 value = message, onValueChange = onMessageChanged,
                 label = { Text("Commit message") },
@@ -732,19 +717,70 @@ private fun CommitBar(
                     modifier = Modifier.padding(top = 2.dp),
                 )
             }
+
+            // Everything below is secondary to "type a message and hit Commit" — collapsed
+            // by default so the bar doesn't compete with the message field and the three
+            // action buttons for attention on first glance. A small dot on the toggle itself
+            // signals "something's actually set in here" (a type chosen or a template saved)
+            // even while collapsed, so picking a type once doesn't silently vanish from view.
             Row(
-                Modifier.fillMaxWidth().clickable { showTemplateEditor = true },
+                Modifier.fillMaxWidth().clickable { showMoreOptions = !showMoreOptions }.padding(top = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(Icons.Filled.Description, null, Modifier.size(13.dp), tint = StatusClean)
-                Spacer(Modifier.width(4.dp))
-                Text(
-                    if (template.prefix.isBlank() && template.footer.isBlank()) "No commit template set"
-                    else "Template: ${template.prefix.ifBlank { "—" }} … ${template.footer.ifBlank { "—" }}",
-                    style = MaterialTheme.typography.labelSmall, color = StatusClean, maxLines = 1,
-                    modifier = Modifier.padding(top = 2.dp),
+                Icon(
+                    if (showMoreOptions) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                    null, Modifier.size(16.dp), tint = StatusClean,
                 )
+                Spacer(Modifier.width(4.dp))
+                Text("More options", style = MaterialTheme.typography.labelSmall, color = StatusClean)
+                if (!showMoreOptions && (currentType != null || hasTemplate)) {
+                    Spacer(Modifier.width(6.dp))
+                    Box(Modifier.size(6.dp).background(CommandBlue, shape = androidx.compose.foundation.shape.CircleShape))
+                }
             }
+
+            AnimatedVisibility(visible = showMoreOptions, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+                Column {
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        COMMIT_TYPES.forEach { type ->
+                            FilterChip(
+                                selected = currentType == type,
+                                onClick = { applyType(if (currentType == type) null else type) },
+                                label = { Text(type, style = MaterialTheme.typography.labelSmall) },
+                            )
+                        }
+                    }
+                    if (currentType != null) {
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedTextField(
+                            value = scope,
+                            onValueChange = { scope = it; applyType(currentType) },
+                            label = { Text("Scope (optional)") },
+                            singleLine = true,
+                            textStyle = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        Modifier.fillMaxWidth().clickable { showTemplateEditor = true },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Icons.Filled.Description, null, Modifier.size(13.dp), tint = StatusClean)
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            if (!hasTemplate) "No commit template set"
+                            else "Template: ${template.prefix.ifBlank { "—" }} … ${template.footer.ifBlank { "—" }}",
+                            style = MaterialTheme.typography.labelSmall, color = StatusClean, maxLines = 1,
+                        )
+                    }
+                }
+            }
+
             if (showUpstreamNudge) {
                 Spacer(Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {

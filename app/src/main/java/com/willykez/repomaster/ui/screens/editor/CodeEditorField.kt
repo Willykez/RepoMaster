@@ -19,6 +19,8 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,9 +39,20 @@ import com.willykez.repomaster.ui.theme.currentSyntaxColors
 
 /** Font size / line height shared by the gutter, the text field, and the caller's
  *  scroll-to-line math (all three must agree, or line numbers / jump-to-line drift
- *  out of alignment with the actual rendered lines). */
-val EditorFontSize = 13.sp
-val EditorLineHeight = 19.sp
+ *  out of alignment with the actual rendered lines). Backed by [AppearancePrefs] rather
+ *  than a fixed constant, so the Settings screen's editor text size actually does something —
+ *  every call site reads the same live value, so gutter/field/scroll-math never disagree. */
+@Composable
+fun currentEditorFontSize(): androidx.compose.ui.unit.TextUnit {
+    val size by com.willykez.repomaster.data.AppearancePrefs.editorTextSize.collectAsState()
+    return size.fontSp.sp
+}
+
+@Composable
+fun currentEditorLineHeight(): androidx.compose.ui.unit.TextUnit {
+    val size by com.willykez.repomaster.data.AppearancePrefs.editorTextSize.collectAsState()
+    return size.lineHeightSp.sp
+}
 
 /** Quick-insert symbols shown above the keyboard — the punctuation mobile
  *  keyboards bury behind a symbols/shift layer, surfaced as one tap instead.
@@ -86,14 +99,19 @@ fun CodeEditorField(
     modifier: Modifier = Modifier,
 ) {
     val syntaxColors = currentSyntaxColors()
+    val fontSize = currentEditorFontSize()
+    val lineHeight = currentEditorLineHeight()
     val lineCount = remember(value.text) { value.text.count { it == '\n' } + 1 }
     val gutterDigits = remember(lineCount) { lineCount.toString().length.coerceAtLeast(2) }
     val horizontalScrollState = rememberScrollState()
+    // Debounced, background-computed — see rememberHighlightedText for why this matters:
+    // it's what keeps opening/typing in a large file from stalling on synchronous regex work.
+    val highlighted = rememberHighlightedText(value.text, language, syntaxColors)
 
     val codeTextStyle = TextStyle(
         fontFamily = FontFamily.Monospace,
-        fontSize = EditorFontSize,
-        lineHeight = EditorLineHeight,
+        fontSize = fontSize,
+        lineHeight = lineHeight,
         color = MaterialTheme.colorScheme.onSurface,
         // Legacy font padding adds inconsistent top/bottom padding per-platform and
         // must be off for lineHeightStyle (below) to actually govern the line box.
@@ -114,27 +132,25 @@ fun CodeEditorField(
                 .fillMaxWidth()
                 .verticalScroll(verticalScrollState)
         ) {
-            // Gutter — one Text per logical line, same line height as the field so rows line up.
-            // Fixed exact width, not just a minimum: every Text inside uses fillMaxWidth()
-            // to right-align its number, which gives Compose no smaller intrinsic width
-            // to prefer — with only `widthIn(min = ...)` (no max), the gutter would happily
-            // expand to fill whatever width the row hands it, pushing the actual text field
-            // off-screen. `.width(...)` pins it to exactly the size the digits need.
-            Column(
-                Modifier
+            // Gutter — ONE Text composable holding every line number, not one Text per line.
+            // Compose's per-line textAlign still right-aligns each individual number
+            // correctly inside a single multi-line Text, so the visual result is identical —
+            // but for a file with hundreds of lines, this is hundreds fewer composables to
+            // measure and lay out on first composition. That per-line-Text version was the
+            // main reason opening a large file felt like it stalled: a plain (non-lazy)
+            // Column had to synchronously compose and measure every single line number up
+            // front, even ones nowhere near the visible viewport.
+            val gutterText = remember(lineCount) { (1..lineCount).joinToString("\n") }
+            Text(
+                text = gutterText,
+                style = codeTextStyle.copy(color = StatusClean),
+                textAlign = TextAlign.End,
+                modifier = Modifier
                     .width((gutterDigits * 9 + 20).dp)
                     .background(MaterialTheme.colorScheme.surfaceVariant)
                     .padding(horizontal = 8.dp, vertical = 12.dp)
-            ) {
-                for (n in 1..lineCount) {
-                    Text(
-                        text = n.toString(),
-                        style = codeTextStyle.copy(color = StatusClean),
-                        textAlign = TextAlign.End,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-            }
+                    .fillMaxWidth(),
+            )
 
             BasicTextField(
                 value = value,
@@ -144,7 +160,7 @@ fun CodeEditorField(
                     .horizontalScroll(horizontalScrollState)
                     .padding(12.dp),
                 textStyle = codeTextStyle,
-                visualTransformation = SyntaxHighlightTransformation(language, syntaxColors),
+                visualTransformation = remember(highlighted) { CachedHighlightTransformation(highlighted) },
                 // No `singleLine`/maxLines cap (this is a multi-line editor). No explicit
                 // "no wrap" flag exists on this overload — `horizontalScroll` above gives
                 // this field unbounded width instead, so each logical line measures at
