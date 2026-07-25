@@ -25,7 +25,29 @@ import androidx.compose.ui.unit.dp
 // This uses the standard, always-public M3 color-scheme/theme API instead —
 // same palette, same shapes, same typography, just without the Expressive
 // motion system.
-private val DarkScheme = darkColorScheme(
+// A wider range of roundedness used deliberately, not just one radius
+// everywhere — cards and sheets get bigger, softer corners; chips and small
+// controls stay tighter.
+val RepoMasterShapes = Shapes(
+    extraSmall = RoundedCornerShape(8.dp),
+    small = RoundedCornerShape(12.dp),
+    medium = RoundedCornerShape(20.dp),
+    large = RoundedCornerShape(28.dp),
+    extraLarge = RoundedCornerShape(36.dp),
+)
+
+/**
+ * Built inside the composable (not as a top-level `val`) specifically so it re-reads
+ * [CommandBlue]/[SignalGold]/[Emerald] on every recomposition. Those are `mutableStateOf`
+ * accents the Settings screen's color palette picker reassigns at runtime (see
+ * [com.willykez.repomaster.ui.theme.AccentPalette]) — a top-level `val` here would have
+ * captured whatever their value was at first app launch and frozen it forever, so a palette
+ * change would repaint custom-tinted icons/cards (which read those vars directly) but leave
+ * every stock Material3 component (Button, FilterChip, TopAppBar...) stuck on the old accent,
+ * since those all read `MaterialTheme.colorScheme` instead.
+ */
+@Composable
+private fun darkScheme() = darkColorScheme(
     primary = CommandBlue,
     onPrimary = Color(0xFF2B1259),
     primaryContainer = CommandBlueDeep,
@@ -52,7 +74,8 @@ private val DarkScheme = darkColorScheme(
     onError = Color.White,
 )
 
-private val LightScheme = lightColorScheme(
+@Composable
+private fun lightScheme() = lightColorScheme(
     primary = CommandBlueDeep,
     onPrimary = Color.White,
     primaryContainer = CommandBlueDim,
@@ -72,24 +95,15 @@ private val LightScheme = lightColorScheme(
     onError = Color.White,
 )
 
-// A wider range of roundedness used deliberately, not just one radius
-// everywhere — cards and sheets get bigger, softer corners; chips and small
-// controls stay tighter.
-val RepoMasterShapes = Shapes(
-    extraSmall = RoundedCornerShape(8.dp),
-    small = RoundedCornerShape(12.dp),
-    medium = RoundedCornerShape(20.dp),
-    large = RoundedCornerShape(28.dp),
-    extraLarge = RoundedCornerShape(36.dp),
-)
-
 @Composable
 fun RepoMasterTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     // Material You: derive the scheme from the user's wallpaper on Android 12+.
     // Off by default would make every install look identical; on by default
     // is the whole point of personalization — flip to false if you want Repo
-    // Master's violet/coral identity to be non-negotiable.
+    // Master's violet/coral identity to be non-negotiable. Also the reason the
+    // Settings color palette picker only has visible effect when this is off:
+    // a wallpaper-derived scheme overrides the app's own accent seeds entirely.
     dynamicColor: Boolean = true,
     content: @Composable () -> Unit
 ) {
@@ -97,8 +111,8 @@ fun RepoMasterTheme(
     val colorScheme = when {
         dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
             if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        darkTheme -> DarkScheme
-        else -> LightScheme
+        darkTheme -> darkScheme()
+        else -> lightScheme()
     }
 
     MaterialTheme(

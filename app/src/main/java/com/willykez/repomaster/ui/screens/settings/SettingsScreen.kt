@@ -5,6 +5,10 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -15,12 +19,14 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.willykez.repomaster.data.AccentPalettePrefs
 import com.willykez.repomaster.data.AppearancePrefs
 import com.willykez.repomaster.ui.components.GlassCard
 import com.willykez.repomaster.ui.theme.*
@@ -55,6 +61,7 @@ fun SettingsScreen(onBack: () -> Unit, vm: SettingsViewModel = viewModel()) {
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             AppearanceSection(context)
+            ColorPaletteSection(context)
             GitIdentitySection(state, onSave = vm::setGitIdentity)
             BackgroundSyncSection(
                 state = state,
@@ -79,6 +86,154 @@ fun SettingsScreen(onBack: () -> Unit, vm: SettingsViewModel = viewModel()) {
             Spacer(Modifier.height(8.dp))
         }
     }
+}
+
+@Composable
+private fun ColorPaletteSection(context: android.content.Context) {
+    val dynamicColor by AppearancePrefs.dynamicColor.collectAsState()
+    // Read directly rather than through SettingsUiState — this repaints the swatch grid
+    // itself the moment a selection is made, without needing a round trip through the
+    // ViewModel just to know which preset is currently active.
+    var selectedId by remember { mutableStateOf(AccentPalettePrefs.currentPresetId(context)) }
+    var showCustomDialog by remember { mutableStateOf(false) }
+    var customHexInput by remember { mutableStateOf(AccentPalettePrefs.currentCustomHex(context) ?: "") }
+    var customHexError by remember { mutableStateOf(false) }
+
+    SettingsCard("Color palette", Icons.Filled.Palette) {
+        Text(
+            "Repaints the whole app — cards, buttons, status colors, the commit graph — not just this screen.",
+            style = MaterialTheme.typography.bodySmall, color = StatusClean,
+        )
+        if (dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.WarningAmber, null, Modifier.size(13.dp), tint = Amber)
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    "Wallpaper-based color (above) overrides this while it's on",
+                    style = MaterialTheme.typography.labelSmall, color = Amber,
+                )
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            AccentPalette.presets.forEach { preset ->
+                PaletteSwatch(
+                    color = preset.swatch,
+                    label = preset.label,
+                    selected = selectedId == preset.id,
+                    onClick = {
+                        AccentPalettePrefs.selectPreset(context, preset.id)
+                        selectedId = preset.id
+                    },
+                )
+            }
+            CustomSwatch(
+                selected = selectedId == "custom",
+                currentHex = AccentPalettePrefs.currentCustomHex(context),
+                onClick = { showCustomDialog = true },
+            )
+        }
+    }
+
+    if (showCustomDialog) {
+        AlertDialog(
+            onDismissRequest = { showCustomDialog = false },
+            title = { Text("Custom color") },
+            text = {
+                Column {
+                    Text(
+                        "Enter a hex color — the app generates a matching secondary and tertiary accent from it automatically.",
+                        style = MaterialTheme.typography.bodySmall, color = StatusClean,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = customHexInput,
+                        onValueChange = { customHexInput = it; customHexError = false },
+                        label = { Text("Hex color") },
+                        placeholder = { Text("#7C3AED") },
+                        singleLine = true,
+                        isError = customHexError,
+                        supportingText = if (customHexError) {
+                            { Text("Enter a valid 6-digit hex color, e.g. #7C3AED") }
+                        } else null,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val applied = AccentPalettePrefs.selectCustomHex(context, customHexInput)
+                    if (applied) { selectedId = "custom"; showCustomDialog = false } else customHexError = true
+                }) { Text("Apply") }
+            },
+            dismissButton = { TextButton(onClick = { showCustomDialog = false }) { Text("Cancel") } },
+        )
+    }
+}
+
+@Composable
+private fun PaletteSwatch(color: androidx.compose.ui.graphics.Color, label: String, selected: Boolean, onClick: () -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(56.dp)) {
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .clip(androidx.compose.foundation.shape.CircleShape)
+                .background(color)
+                .then(
+                    if (selected) Modifier.border(2.5.dp, MaterialTheme.colorScheme.onSurface, androidx.compose.foundation.shape.CircleShape)
+                    else Modifier
+                )
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (selected) {
+                Icon(Icons.Filled.Check, null, tint = contrastingIconColor(color), modifier = Modifier.size(20.dp))
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(label, style = MaterialTheme.typography.labelSmall, color = StatusClean, maxLines = 1)
+    }
+}
+
+@Composable
+private fun CustomSwatch(selected: Boolean, currentHex: String?, onClick: () -> Unit) {
+    val swatchColor = currentHex?.let { parseHexColorOrNull(it) } ?: MaterialTheme.colorScheme.surfaceVariant
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(56.dp)) {
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .clip(androidx.compose.foundation.shape.CircleShape)
+                .background(swatchColor)
+                .border(
+                    if (selected) 2.5.dp else 1.dp,
+                    if (selected) MaterialTheme.colorScheme.onSurface else StatusClean.copy(alpha = 0.4f),
+                    androidx.compose.foundation.shape.CircleShape,
+                )
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                if (selected) Icons.Filled.Check else Icons.Filled.Edit,
+                null,
+                tint = if (currentHex != null) contrastingIconColor(swatchColor) else StatusClean,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        Text("Custom", style = MaterialTheme.typography.labelSmall, color = StatusClean, maxLines = 1)
+    }
+}
+
+/** Picks black or white for icon contrast against an arbitrary swatch color — simple
+ *  perceptual-luminance threshold, same idea as the reference app's contrastingTextColor. */
+@Composable
+private fun contrastingIconColor(background: androidx.compose.ui.graphics.Color): androidx.compose.ui.graphics.Color {
+    val luminance = 0.299f * background.red + 0.587f * background.green + 0.114f * background.blue
+    return if (luminance > 0.6f) androidx.compose.ui.graphics.Color.Black else androidx.compose.ui.graphics.Color.White
 }
 
 @Composable

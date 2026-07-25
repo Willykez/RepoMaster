@@ -1,6 +1,7 @@
 package com.willykez.repomaster
 
 import android.app.Application
+import com.willykez.repomaster.data.AccentPalettePrefs
 import com.willykez.repomaster.data.AppearancePrefs
 import com.willykez.repomaster.data.GitIdentityPrefs
 import com.willykez.repomaster.data.db.AppDatabase
@@ -31,6 +32,7 @@ class App : Application() {
         SyncNotifier.createChannel(this)
         AppearancePrefs.init(this)
         GitIdentityPrefs.init(this)
+        AccentPalettePrefs.init(this)
 
         // Re-applies whatever the user last set in Settings — WorkManager schedules don't
         // survive a full app data wipe/reinstall, but they do survive normal process death,
