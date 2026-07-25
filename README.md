@@ -18,7 +18,7 @@ dark "command center" design system.
 - **Sync** — fetch, pull (merge or rebase), push, and combined sync, including force variants when you need them
 - **Conflict resolution** — pick "ours"/"theirs" per file, or jump into the built-in editor to resolve by hand
 - **History** — commit log, cherry-pick, amend, squash
-- **Branches, tags & remotes** — full CRUD on all three
+- **Branches, tags & remotes** — full CRUD all three
 - **File explorer & editor** — browse the working tree and edit text files directly
 - **Blame view** — see who changed each line and when
 - **.gitignore editor** — with quick-insert templates for common stacks
