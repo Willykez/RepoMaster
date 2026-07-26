@@ -1,10 +1,15 @@
 package com.willykez.repomaster.ui.screens.repolist
 
 import android.os.Build
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.clickable
@@ -60,7 +65,7 @@ fun RepoListScreen(
     var showCloneSheet by remember { mutableStateOf(false) }
     var showSearch by remember { mutableStateOf(false) }
     var showSortMenu by remember { mutableStateOf(false) }
-    var showOverflowMenu by remember { mutableStateOf(false) }
+    var fabExpanded by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
     var hasStorageAccess by remember { mutableStateOf(PublicStorage.hasStorageAccess(context)) }
@@ -128,31 +133,33 @@ fun RepoListScreen(
                                     onClick = { showSortMenu = false; vm.setSortMode(RepoSortMode.HAS_CHANGES) })
                             }
                         }
-                        Box {
-                            IconButton(onClick = { showOverflowMenu = true }) { Icon(Icons.Filled.MoreVert, "More") }
-                            DropdownMenu(expanded = showOverflowMenu, onDismissRequest = { showOverflowMenu = false }) {
-                                DropdownMenuItem(text = { Text("Scan for local repos") },
-                                    leadingIcon = { Icon(Icons.Filled.FolderSpecial, null) },
-                                    onClick = { showOverflowMenu = false; vm.scanForLocalRepos() })
-                                DropdownMenuItem(text = { Text("Discover on GitHub") },
-                                    leadingIcon = { Icon(Icons.Filled.Explore, null) },
-                                    onClick = { showOverflowMenu = false; onOpenDiscover() })
-                                DropdownMenuItem(text = { Text("Credentials") },
-                                    leadingIcon = { Icon(Icons.Filled.Key, null) },
-                                    onClick = { showOverflowMenu = false; onOpenCredentials() })
-                                DropdownMenuItem(text = { Text("Settings") },
-                                    leadingIcon = { Icon(Icons.Filled.Settings, null) },
-                                    onClick = { showOverflowMenu = false; onOpenSettings() })
-                            }
-                        }
-                        IconButton(onClick = { showCloneSheet = true }) { Icon(Icons.Filled.Add, "Clone") }
+                        // Credentials and Settings are destinations, not "add" actions, so they
+                        // stay as plain single-tap icons rather than living inside a dropdown
+                        // that mixed navigation with repo-creation — the FAB below is now the
+                        // one, consistent place for every way to add a repo.
+                        IconButton(onClick = onOpenCredentials) { Icon(Icons.Filled.Key, "Credentials") }
+                        IconButton(onClick = onOpenSettings) { Icon(Icons.Filled.Settings, "Settings") }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface, titleContentColor = MaterialTheme.colorScheme.onSurface, navigationIconContentColor = MaterialTheme.colorScheme.onSurface, actionIconContentColor = MaterialTheme.colorScheme.onSurface),
             )
         },
+        floatingActionButton = {
+            RepoListFab(
+                expanded = fabExpanded,
+                onToggle = { fabExpanded = !fabExpanded },
+                onCloneUrl = { fabExpanded = false; showCloneSheet = true },
+                onDiscoverGitHub = { fabExpanded = false; onOpenDiscover() },
+                onScanLocal = { fabExpanded = false; vm.scanForLocalRepos() },
+            )
+        },
         snackbarHost = { SnackbarHost(snack) { d -> Snackbar(d) } },
     ) { pad ->
+        // Tapping anywhere on the list while the FAB menu is open collapses it first,
+        // instead of leaving it open and letting the tap fall through to whatever's under it.
+        Box(Modifier.fillMaxSize().let { if (fabExpanded) it.clickable(
+            interactionSource = remember { MutableInteractionSource() }, indication = null,
+        ) { fabExpanded = false } else it }) {
         Column(
             Modifier
                 .fillMaxSize()
@@ -207,6 +214,7 @@ fun RepoListScreen(
                     }
                 }
             }
+        }
         }
     }
 
@@ -323,6 +331,52 @@ fun RepoListScreen(
             onCloned = { showCloneSheet = false },
             onAddCredential = onOpenCredentials,
         )
+    }
+}
+
+/**
+ * Every way to add a repo, in one consistent place — replaces what used to be split across
+ * a top-bar "+" icon (Clone) and a separate "..." overflow menu (Scan/Discover) mixed in
+ * with unrelated navigation items (Credentials/Settings). A small vertical speed-dial: tap
+ * the main FAB to reveal three labeled options, tap one to act (and auto-collapse), tap the
+ * main FAB again (now an ✕) or tap anywhere else on the screen to dismiss without picking one.
+ */
+@Composable
+private fun RepoListFab(
+    expanded: Boolean, onToggle: () -> Unit,
+    onCloneUrl: () -> Unit, onDiscoverGitHub: () -> Unit, onScanLocal: () -> Unit,
+) {
+    Column(horizontalAlignment = Alignment.End) {
+        AnimatedVisibility(
+            visible = expanded,
+            enter = fadeIn() + expandVertically(expandFrom = Alignment.Bottom),
+            exit = fadeOut() + shrinkVertically(shrinkTowards = Alignment.Bottom),
+        ) {
+            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                FabMenuOption("Discover on GitHub", Icons.Filled.Explore, onDiscoverGitHub)
+                FabMenuOption("Clone by URL", Icons.Filled.Link, onCloneUrl)
+                FabMenuOption("Scan for local repos", Icons.Filled.FolderSpecial, onScanLocal)
+                Spacer(Modifier.height(4.dp))
+            }
+        }
+        FloatingActionButton(onClick = onToggle) {
+            val rotation by animateFloatAsState(if (expanded) 45f else 0f, label = "fabRotation")
+            Icon(Icons.Filled.Add, if (expanded) "Close" else "Add repo", modifier = Modifier.graphicsLayer { rotationZ = rotation })
+        }
+    }
+}
+
+@Composable
+private fun FabMenuOption(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Surface(
+            tonalElevation = 3.dp, shadowElevation = 2.dp,
+            shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            modifier = Modifier.clickable(onClick = onClick),
+        ) {
+            Text(label, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp))
+        }
+        SmallFloatingActionButton(onClick = onClick) { Icon(icon, label, modifier = Modifier.size(20.dp)) }
     }
 }
 

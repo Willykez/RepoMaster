@@ -1,6 +1,5 @@
 package com.willykez.repomaster.ui.screens.editor
 
-import kotlinx.coroutines.withContext
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -10,6 +9,7 @@ import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
 import com.willykez.repomaster.ui.theme.SyntaxColorSet
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 /**
  * Which family of highlighting rules applies to a file, inferred from its
