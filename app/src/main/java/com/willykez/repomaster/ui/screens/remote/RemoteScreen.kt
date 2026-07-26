@@ -130,8 +130,14 @@ fun RemoteScreen(repoId: Long, onBack: () -> Unit, vm: RemoteViewModel = viewMod
             TopAppBar(
                 title = { Text("Remotes", fontWeight = FontWeight.SemiBold) },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, "Back") } },
-                actions = { IconButton(onClick = { showAdd = true }) { Icon(Icons.Filled.Add, "Add remote") } },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface, titleContentColor = MaterialTheme.colorScheme.onSurface, navigationIconContentColor = MaterialTheme.colorScheme.onSurface, actionIconContentColor = MaterialTheme.colorScheme.onSurface),
+            )
+        },
+        floatingActionButton = {
+            ExtendedFloatingActionButton(
+                onClick = { showAdd = true },
+                icon = { Icon(Icons.Filled.Add, null) }, text = { Text("Add remote") },
+                containerColor = MaterialTheme.colorScheme.secondary, contentColor = MaterialTheme.colorScheme.onSecondary,
             )
         },
         snackbarHost = { SnackbarHost(snack) },
@@ -139,7 +145,7 @@ fun RemoteScreen(repoId: Long, onBack: () -> Unit, vm: RemoteViewModel = viewMod
         if (state.isLoading) {
             Box(Modifier.fillMaxSize().padding(pad), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         } else {
-            LazyColumn(Modifier.fillMaxSize().padding(pad), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            LazyColumn(Modifier.fillMaxSize().padding(pad), contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 88.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (state.remotes.isEmpty()) {
                     item {
                         Box(Modifier.fillMaxWidth().padding(top = 48.dp), contentAlignment = Alignment.Center) {

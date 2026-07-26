@@ -141,9 +141,15 @@ fun TagsScreen(repoId: Long, onBack: () -> Unit, vm: TagsViewModel = viewModel()
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, "Back") } },
                 actions = {
                     IconButton(onClick = vm::pushTags, enabled = state.tags.isNotEmpty()) { Icon(Icons.Filled.Upload, "Push tags") }
-                    IconButton(onClick = { showCreate = true }) { Icon(Icons.Filled.Add, "Create tag") }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface, titleContentColor = MaterialTheme.colorScheme.onSurface, navigationIconContentColor = MaterialTheme.colorScheme.onSurface, actionIconContentColor = MaterialTheme.colorScheme.onSurface),
+            )
+        },
+        floatingActionButton = {
+            ExtendedFloatingActionButton(
+                onClick = { showCreate = true },
+                icon = { Icon(Icons.Filled.Add, null) }, text = { Text("New tag") },
+                containerColor = MaterialTheme.colorScheme.secondary, contentColor = MaterialTheme.colorScheme.onSecondary,
             )
         },
         snackbarHost = { SnackbarHost(snack) },
@@ -161,7 +167,7 @@ fun TagsScreen(repoId: Long, onBack: () -> Unit, vm: TagsViewModel = viewModel()
                 }
             }
         } else {
-            LazyColumn(Modifier.fillMaxSize().padding(pad), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            LazyColumn(Modifier.fillMaxSize().padding(pad), contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 88.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 items(state.tags, key = { it.name }) { t ->
                     TagRow(t, onDelete = { vm.deleteTag(t.name, t.sha) })
                 }

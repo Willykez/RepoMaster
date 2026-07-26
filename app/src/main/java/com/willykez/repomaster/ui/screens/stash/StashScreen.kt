@@ -120,9 +120,15 @@ fun StashScreen(repoId: Long, onBack: () -> Unit, vm: StashViewModel = viewModel
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, "Back") } },
                 actions = {
                     if (state.stashes.isNotEmpty()) IconButton(onClick = vm::pop) { Icon(Icons.Filled.PlayArrow, "Pop") }
-                    IconButton(onClick = { showSaveDialog = true }) { Icon(Icons.Filled.Save, "Save stash") }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface, titleContentColor = MaterialTheme.colorScheme.onSurface, navigationIconContentColor = MaterialTheme.colorScheme.onSurface, actionIconContentColor = MaterialTheme.colorScheme.onSurface),
+            )
+        },
+        floatingActionButton = {
+            ExtendedFloatingActionButton(
+                onClick = { showSaveDialog = true },
+                icon = { Icon(Icons.Filled.Save, null) }, text = { Text("Save stash") },
+                containerColor = MaterialTheme.colorScheme.secondary, contentColor = MaterialTheme.colorScheme.onSecondary,
             )
         },
         snackbarHost = { SnackbarHost(snack) },
@@ -135,12 +141,10 @@ fun StashScreen(repoId: Long, onBack: () -> Unit, vm: StashViewModel = viewModel
                     Icon(Icons.Filled.Inventory, null, Modifier.size(48.dp), tint = StatusClean)
                     Spacer(Modifier.height(12.dp))
                     Text("No stashes", color = StatusClean)
-                    Spacer(Modifier.height(8.dp))
-                    Button(onClick = { showSaveDialog = true }) { Text("Save Stash") }
                 }
             }
         } else {
-            LazyColumn(Modifier.fillMaxSize().padding(pad), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            LazyColumn(Modifier.fillMaxSize().padding(pad), contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 88.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 items(state.stashes, key = { it.sha }) { s ->
                     StashRow(s, onApply = { vm.apply("stash@{${s.index}}") }, onDrop = { stashToDrop = s })
                 }

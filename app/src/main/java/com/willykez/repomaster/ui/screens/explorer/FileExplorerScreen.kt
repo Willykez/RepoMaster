@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -349,7 +350,7 @@ fun FileExplorerScreen(
     val context = LocalContext.current
     var nodePendingRename by remember { mutableStateOf<FileNode?>(null) }
     var nodePendingDelete by remember { mutableStateOf<FileNode?>(null) }
-    var showAddMenu by remember { mutableStateOf(false) }
+    var fabExpanded by remember { mutableStateOf(false) }
     var showNewFileDialog by remember { mutableStateOf(false) }
     var showNewFolderDialog by remember { mutableStateOf(false) }
     var selectedPaths by remember { mutableStateOf(setOf<String>()) }
@@ -410,31 +411,23 @@ fun FileExplorerScreen(
                         IconButton(onClick = onOpenSearch, enabled = !state.isBusy) {
                             Icon(Icons.Filled.Search, "Search this repo")
                         }
-                        Box {
-                            IconButton(onClick = { showAddMenu = true }, enabled = !state.isBusy) {
-                                Icon(Icons.Filled.Add, "Add")
-                            }
-                            DropdownMenu(expanded = showAddMenu, onDismissRequest = { showAddMenu = false }) {
-                                DropdownMenuItem(text = { Text("New File") },
-                                    onClick = { showAddMenu = false; showNewFileDialog = true },
-                                    leadingIcon = { Icon(Icons.Filled.NoteAdd, null) })
-                                DropdownMenuItem(text = { Text("New Folder") },
-                                    onClick = { showAddMenu = false; showNewFolderDialog = true },
-                                    leadingIcon = { Icon(Icons.Filled.CreateNewFolder, null) })
-                                HorizontalDivider()
-                                DropdownMenuItem(text = { Text("Import Files") },
-                                    onClick = { showAddMenu = false; importFilesLauncher.launch(arrayOf("*/*")) },
-                                    leadingIcon = { Icon(Icons.Filled.UploadFile, null) })
-                                DropdownMenuItem(text = { Text("Import Folder") },
-                                    onClick = { showAddMenu = false; importFolderLauncher.launch(null) },
-                                    leadingIcon = { Icon(Icons.Filled.DriveFolderUpload, null) })
-                            }
-                        }
                         IconButton(onClick = vm::push, enabled = !state.isBusy) {
                             if (state.isBusy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                             else Icon(Icons.Filled.ArrowUpward, "Push")
                         }
                     },
+                )
+            }
+        },
+        floatingActionButton = {
+            if (!selectionMode) {
+                FileExplorerFab(
+                    expanded = fabExpanded,
+                    onToggle = { fabExpanded = !fabExpanded },
+                    onNewFile = { fabExpanded = false; showNewFileDialog = true },
+                    onNewFolder = { fabExpanded = false; showNewFolderDialog = true },
+                    onImportFiles = { fabExpanded = false; importFilesLauncher.launch(arrayOf("*/*")) },
+                    onImportFolder = { fabExpanded = false; importFolderLauncher.launch(null) },
                 )
             }
         },
@@ -455,7 +448,7 @@ fun FileExplorerScreen(
             }
         } else {
             LazyColumn(
-                contentPadding = PaddingValues(12.dp),
+                contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 96.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
                 modifier = Modifier.fillMaxSize().padding(pad),
             ) {
@@ -544,6 +537,59 @@ fun FileExplorerScreen(
 }
 
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+/**
+ * Every way to add something to this folder, in one place — replaces what used to be a
+ * dropdown mixing file creation with file import. Same speed-dial pattern as the repo list's
+ * FAB: tap to reveal four labeled options, tap one to act.
+ */
+@Composable
+private fun FileExplorerFab(
+    expanded: Boolean, onToggle: () -> Unit,
+    onNewFile: () -> Unit, onNewFolder: () -> Unit, onImportFiles: () -> Unit, onImportFolder: () -> Unit,
+) {
+    Column(horizontalAlignment = Alignment.End) {
+        androidx.compose.animation.AnimatedVisibility(
+            visible = expanded,
+            enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.expandVertically(expandFrom = Alignment.Bottom),
+            exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.shrinkVertically(shrinkTowards = Alignment.Bottom),
+        ) {
+            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                ExplorerFabOption("Import folder", Icons.Filled.DriveFolderUpload, onImportFolder)
+                ExplorerFabOption("Import files", Icons.Filled.UploadFile, onImportFiles)
+                ExplorerFabOption("New folder", Icons.Filled.CreateNewFolder, onNewFolder)
+                ExplorerFabOption("New file", Icons.Filled.NoteAdd, onNewFile)
+                Spacer(Modifier.height(4.dp))
+            }
+        }
+        FloatingActionButton(
+            onClick = onToggle,
+            containerColor = MaterialTheme.colorScheme.secondary,
+            contentColor = MaterialTheme.colorScheme.onSecondary,
+        ) {
+            val rotation by androidx.compose.animation.core.animateFloatAsState(if (expanded) 45f else 0f, label = "fabRotation")
+            Icon(Icons.Filled.Add, if (expanded) "Close" else "Add", modifier = Modifier.graphicsLayer { rotationZ = rotation })
+        }
+    }
+}
+
+@Composable
+private fun ExplorerFabOption(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Surface(
+            tonalElevation = 3.dp, shadowElevation = 2.dp,
+            shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            modifier = Modifier.clickable(onClick = onClick),
+        ) {
+            Text(label, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp))
+        }
+        SmallFloatingActionButton(
+            onClick = onClick,
+            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        ) { Icon(icon, label, modifier = Modifier.size(20.dp)) }
+    }
+}
+
 @Composable
 private fun FileRow(
     node: FileNode,

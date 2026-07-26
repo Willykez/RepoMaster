@@ -32,10 +32,14 @@ fun DiscoverScreen(onBack: () -> Unit, vm: DiscoverViewModel = viewModel()) {
             TopAppBar(
                 title = { Text("Discover", fontWeight = FontWeight.SemiBold) },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, "Back") } },
-                actions = {
-                    IconButton(onClick = { showCreateDialog = true }) { Icon(Icons.Filled.Add, "Create repo on GitHub") }
-                },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface, titleContentColor = MaterialTheme.colorScheme.onSurface, navigationIconContentColor = MaterialTheme.colorScheme.onSurface),
+            )
+        },
+        floatingActionButton = {
+            ExtendedFloatingActionButton(
+                onClick = { showCreateDialog = true },
+                icon = { Icon(Icons.Filled.Add, null) }, text = { Text("New repo") },
+                containerColor = MaterialTheme.colorScheme.secondary, contentColor = MaterialTheme.colorScheme.onSecondary,
             )
         },
         snackbarHost = { SnackbarHost(snack) },
@@ -112,7 +116,7 @@ fun DiscoverScreen(onBack: () -> Unit, vm: DiscoverViewModel = viewModel()) {
                 state.results.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text("No repos found", color = StatusClean)
                 }
-                else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 80.dp)) {
                     items(state.results, key = { it.fullName }) { repo ->
                         DiscoverRepoCard(
                             repo = repo,

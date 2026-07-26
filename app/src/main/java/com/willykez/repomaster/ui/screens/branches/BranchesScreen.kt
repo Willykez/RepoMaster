@@ -180,8 +180,14 @@ fun BranchesScreen(repoId: Long, onBack: () -> Unit, vm: BranchesViewModel = vie
             TopAppBar(
                 title = { Text("Branches", fontWeight = FontWeight.SemiBold) },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, "Back") } },
-                actions = { IconButton(onClick = { showCreate = true }) { Icon(Icons.Filled.Add, "New branch") } },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface, titleContentColor = MaterialTheme.colorScheme.onSurface, navigationIconContentColor = MaterialTheme.colorScheme.onSurface, actionIconContentColor = MaterialTheme.colorScheme.onSurface),
+            )
+        },
+        floatingActionButton = {
+            ExtendedFloatingActionButton(
+                onClick = { showCreate = true },
+                icon = { Icon(Icons.Filled.Add, null) }, text = { Text("New branch") },
+                containerColor = MaterialTheme.colorScheme.secondary, contentColor = MaterialTheme.colorScheme.onSecondary,
             )
         },
         snackbarHost = { SnackbarHost(snack) },
@@ -194,13 +200,13 @@ fun BranchesScreen(repoId: Long, onBack: () -> Unit, vm: BranchesViewModel = vie
                     Icon(Icons.Filled.AccountTree, null, Modifier.size(48.dp), tint = StatusClean)
                     Spacer(Modifier.height(12.dp))
                     Text("No branches found", style = MaterialTheme.typography.titleMedium)
-                    Text("Tap + to create one", style = MaterialTheme.typography.bodySmall, color = StatusClean)
+                    Text("Tap New branch to create one", style = MaterialTheme.typography.bodySmall, color = StatusClean)
                 }
             }
         } else {
             val local = state.branches.filter { !it.isRemote }
             val remote = state.branches.filter { it.isRemote }
-            LazyColumn(Modifier.fillMaxSize().padding(pad), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            LazyColumn(Modifier.fillMaxSize().padding(pad), contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 88.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 item { SectionLabel("LOCAL (${local.size})") }
                 items(local, key = { it.fullRef }) { b ->
                     BranchRow(b, onCheckout = { vm.checkout(b.name) }, onDelete = { vm.deleteBranch(b.name) },

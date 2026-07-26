@@ -359,7 +359,11 @@ private fun RepoListFab(
                 Spacer(Modifier.height(4.dp))
             }
         }
-        FloatingActionButton(onClick = onToggle) {
+        FloatingActionButton(
+            onClick = onToggle,
+            containerColor = MaterialTheme.colorScheme.secondary,
+            contentColor = MaterialTheme.colorScheme.onSecondary,
+        ) {
             val rotation by animateFloatAsState(if (expanded) 45f else 0f, label = "fabRotation")
             Icon(Icons.Filled.Add, if (expanded) "Close" else "Add repo", modifier = Modifier.graphicsLayer { rotationZ = rotation })
         }
@@ -376,7 +380,11 @@ private fun FabMenuOption(label: String, icon: androidx.compose.ui.graphics.vect
         ) {
             Text(label, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp))
         }
-        SmallFloatingActionButton(onClick = onClick) { Icon(icon, label, modifier = Modifier.size(20.dp)) }
+        SmallFloatingActionButton(
+            onClick = onClick,
+            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        ) { Icon(icon, label, modifier = Modifier.size(20.dp)) }
     }
 }
 
