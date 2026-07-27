@@ -20,7 +20,7 @@ import kotlinx.coroutines.withContext
 
 data class SettingsUiState(
     val backgroundSyncEnabled: Boolean = false,
-    val intervalHours: Long = SyncPrefs.DEFAULT_INTERVAL_HOURS,
+    val intervalMinutes: Long = SyncPrefs.DEFAULT_INTERVAL_MINUTES,
     val authorName: String = "",
     val authorEmail: String = "",
     val storageRootPath: String = "",
@@ -36,7 +36,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     private val _state = MutableStateFlow(
         SettingsUiState(
             backgroundSyncEnabled = SyncPrefs.isEnabled(app),
-            intervalHours = SyncPrefs.intervalHours(app),
+            intervalMinutes = SyncPrefs.intervalMinutes(app),
             authorName = GitIdentityPrefs.currentName(app),
             authorEmail = GitIdentityPrefs.currentEmail(app),
             storageRootPath = PublicStorage.rootDir().absolutePath,
@@ -70,11 +70,12 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         _state.value = _state.value.copy(backgroundSyncEnabled = enabled)
     }
 
-    fun setIntervalHours(hours: Long) {
+    fun setIntervalMinutes(minutes: Long) {
         val app = getApplication<android.app.Application>()
-        SyncPrefs.setIntervalHours(app, hours)
+        val clamped = minutes.coerceIn(SyncPrefs.MIN_INTERVAL_MINUTES, SyncPrefs.MAX_INTERVAL_MINUTES)
+        SyncPrefs.setIntervalMinutes(app, clamped)
         if (_state.value.backgroundSyncEnabled) SyncScheduler.applyFromPrefs(app)
-        _state.value = _state.value.copy(intervalHours = hours.coerceAtLeast(SyncPrefs.MIN_INTERVAL_HOURS))
+        _state.value = _state.value.copy(intervalMinutes = clamped)
     }
 
     fun setGitIdentity(name: String, email: String) {

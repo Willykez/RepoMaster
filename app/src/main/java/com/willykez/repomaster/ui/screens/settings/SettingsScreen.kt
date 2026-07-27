@@ -34,8 +34,8 @@ import com.willykez.repomaster.ui.components.GroupedListSection
 import com.willykez.repomaster.ui.components.SettingsRow
 import com.willykez.repomaster.ui.components.groupPositionFor
 import com.willykez.repomaster.ui.theme.*
+import com.willykez.repomaster.sync.SyncPrefs
 
-private val INTERVAL_OPTIONS = listOf(1L, 3L, 6L, 12L, 24L)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -98,7 +98,7 @@ fun SettingsScreen(onBack: () -> Unit, onOpenApkDownloads: () -> Unit = {}, vm: 
                     SettingsRow(
                         icon = Icons.Filled.Sync,
                         title = "Background sync",
-                        subtitle = if (state.backgroundSyncEnabled) "Checking every ${formatInterval(state.intervalHours)}" else "Off",
+                        subtitle = if (state.backgroundSyncEnabled) "Checking every ${formatInterval(state.intervalMinutes)}" else "Off",
                         trailing = {
                             Switch(
                                 checked = state.backgroundSyncEnabled,
@@ -124,7 +124,7 @@ fun SettingsScreen(onBack: () -> Unit, onOpenApkDownloads: () -> Unit = {}, vm: 
                         SettingsRow(
                             icon = Icons.Filled.Timer,
                             title = "Check every",
-                            subtitle = formatInterval(state.intervalHours),
+                            subtitle = formatInterval(state.intervalMinutes),
                             onClick = { showSyncIntervalDialog = true },
                         )
                     }
@@ -201,26 +201,10 @@ fun SettingsScreen(onBack: () -> Unit, onOpenApkDownloads: () -> Unit = {}, vm: 
     }
 
     if (showSyncIntervalDialog) {
-        AlertDialog(
-            onDismissRequest = { showSyncIntervalDialog = false },
-            title = { Text("Check every") },
-            text = {
-                Column {
-                    INTERVAL_OPTIONS.forEach { hours ->
-                        Row(
-                            Modifier.fillMaxWidth().clickable {
-                                vm.setIntervalHours(hours); showSyncIntervalDialog = false
-                            }.padding(vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            RadioButton(selected = state.intervalHours == hours, onClick = { vm.setIntervalHours(hours); showSyncIntervalDialog = false })
-                            Spacer(Modifier.width(8.dp))
-                            Text(formatInterval(hours))
-                        }
-                    }
-                }
-            },
-            confirmButton = { TextButton(onClick = { showSyncIntervalDialog = false }) { Text("Done") } },
+        SyncIntervalDialog(
+            currentMinutes = state.intervalMinutes,
+            onSave = { vm.setIntervalMinutes(it); showSyncIntervalDialog = false },
+            onDismiss = { showSyncIntervalDialog = false },
         )
     }
 
@@ -281,7 +265,70 @@ private fun AutomationDialog(
     )
 }
 
-private fun formatInterval(hours: Long) = if (hours < 24) "${hours}h" else "1 day"
+private fun formatInterval(minutes: Long): String {
+    val h = minutes / 60
+    val m = minutes % 60
+    return when {
+        h == 0L -> "${m}m"
+        m == 0L -> "${h}h"
+        else -> "${h}h ${m}m"
+    }
+}
+
+/**
+ * A real time picker instead of a fixed list of whole-hour options — drag the slider for any
+ * value, or tap a preset to jump straight to it. Range is capped to what's actually
+ * achievable: [SyncPrefs.MIN_INTERVAL_MINUTES] (15 min) is WorkManager's own hard floor for
+ * periodic background work, not a limit chosen here, and [SyncPrefs.MAX_INTERVAL_MINUTES]
+ * (2 hours) is where checking more often stops being worth the battery/data cost for a
+ * background *fetch*.
+ */
+@Composable
+private fun SyncIntervalDialog(currentMinutes: Long, onSave: (Long) -> Unit, onDismiss: () -> Unit) {
+    var minutes by remember { mutableStateOf(currentMinutes) }
+    val presets = listOf(15L, 30L, 45L, 60L, 90L, 120L)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Check every") },
+        text = {
+            Column {
+                Text(
+                    formatInterval(minutes),
+                    style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.align(Alignment.CenterHorizontally),
+                )
+                Spacer(Modifier.height(12.dp))
+                Slider(
+                    value = minutes.toFloat(),
+                    onValueChange = { minutes = it.toLong() },
+                    valueRange = SyncPrefs.MIN_INTERVAL_MINUTES.toFloat()..SyncPrefs.MAX_INTERVAL_MINUTES.toFloat(),
+                    steps = (SyncPrefs.MAX_INTERVAL_MINUTES - SyncPrefs.MIN_INTERVAL_MINUTES - 1).toInt(),
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(formatInterval(SyncPrefs.MIN_INTERVAL_MINUTES), style = MaterialTheme.typography.labelSmall, color = StatusClean)
+                    Text(formatInterval(SyncPrefs.MAX_INTERVAL_MINUTES), style = MaterialTheme.typography.labelSmall, color = StatusClean)
+                }
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    presets.forEach { preset ->
+                        FilterChip(selected = minutes == preset, onClick = { minutes = preset }, label = { Text(formatInterval(preset)) })
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "15 minutes is Android's own floor for background work — nothing checks more often than that, even a system app.",
+                    style = MaterialTheme.typography.labelSmall, color = StatusClean,
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = { onSave(minutes) }) { Text("Save") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
 
 private fun formatBytes(bytes: Long): String = when {
     bytes >= 1_048_576 -> "%.1f MB".format(bytes / 1_048_576.0)

@@ -16,18 +16,23 @@ object SyncScheduler {
      * actually changed, and replaces the schedule if the interval did. */
     fun applyFromPrefs(context: Context) {
         if (SyncPrefs.isEnabled(context)) {
-            schedule(context, SyncPrefs.intervalHours(context))
+            schedule(context, SyncPrefs.intervalMinutes(context))
         } else {
             cancel(context)
         }
     }
 
-    private fun schedule(context: Context, intervalHours: Long) {
+    private fun schedule(context: Context, intervalMinutes: Long) {
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .build()
 
-        val request = PeriodicWorkRequestBuilder<SyncWorker>(intervalHours, TimeUnit.HOURS)
+        // coerceAtLeast here too, not just in SyncPrefs — this is the actual call that would
+        // throw if handed something below WorkManager's real floor, so it shouldn't depend on
+        // every caller having already clamped correctly upstream.
+        val request = PeriodicWorkRequestBuilder<SyncWorker>(
+            intervalMinutes.coerceAtLeast(SyncPrefs.MIN_INTERVAL_MINUTES), TimeUnit.MINUTES,
+        )
             .setConstraints(constraints)
             .setBackoffCriteria(BackoffPolicy.LINEAR, 15, TimeUnit.MINUTES)
             .build()
