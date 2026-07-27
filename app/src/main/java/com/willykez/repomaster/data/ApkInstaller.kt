@@ -28,6 +28,19 @@ object ApkInstaller {
         data class Failed(val message: String) : Result()
     }
 
+    /** Builds the FileProvider-backed install [Intent] for an APK that's already sitting on
+     *  disk — shared by [extractAndBuildInstallIntent] (right after extracting one from a
+     *  zip) and the APK downloads explorer (reinstalling one that was already extracted in a
+     *  previous session, without needing to re-download anything). */
+    fun installIntentForFile(context: Context, apkFile: File): Intent {
+        val uri: Uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", apkFile)
+        return Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+    }
+
     suspend fun extractAndBuildInstallIntent(
         context: Context,
         zipBytes: ByteArray,
@@ -64,15 +77,7 @@ object ApkInstaller {
 
             if (!found) return@withContext Result.NoApkInArchive
 
-            val uri: Uri = FileProvider.getUriForFile(
-                context, "${context.packageName}.fileprovider", apkFile,
-            )
-            val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, "application/vnd.android.package-archive")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            Result.Ready(intent)
+            Result.Ready(installIntentForFile(context, apkFile))
         } catch (e: Exception) {
             Result.Failed(e.message ?: "Couldn't extract the APK from this build output")
         }

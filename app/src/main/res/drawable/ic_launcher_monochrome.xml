@@ -4,37 +4,33 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- Trunk line -->
+    <!--
+        Android 13+ themed-icon variant — the system supplies its own single tint
+        (from the user's wallpaper/theme) over this shape, so every path here is
+        plain white regardless of the app's own accent palette. Same git-branch
+        glyph as ic_launcher_foreground, just flattened to one color/shape since
+        that's all a monochrome icon is allowed to express.
+    -->
     <path
         android:pathData="M40,28 L40,80"
-        android:strokeColor="#C6A6FF"
+        android:strokeColor="#FFFFFF"
         android:strokeWidth="6.5"
         android:strokeLineCap="round" />
-
-    <!-- Branch curve -->
     <path
         android:pathData="M40,52 C40,65 70,52 70,65"
-        android:strokeColor="#C6A6FF"
+        android:strokeColor="#FFFFFF"
         android:strokeWidth="6.5"
         android:strokeLineCap="round" />
-
-    <!-- Node: top (clone origin) -->
     <path
         android:pathData="M40,28 m-7.5,0 a7.5,7.5 0 1,0 15,0 a7.5,7.5 0 1,0 -15,0"
-        android:fillColor="#FBF3EA" />
-
-    <!-- Node: mid (commit) -->
+        android:fillColor="#FFFFFF" />
     <path
         android:pathData="M40,52 m-7.5,0 a7.5,7.5 0 1,0 15,0 a7.5,7.5 0 1,0 -15,0"
-        android:fillColor="#FBF3EA" />
-
-    <!-- Node: bottom trunk (working copy) -->
+        android:fillColor="#FFFFFF" />
     <path
         android:pathData="M40,80 m-7.5,0 a7.5,7.5 0 1,0 15,0 a7.5,7.5 0 1,0 -15,0"
-        android:fillColor="#4CDA9B" />
-
-    <!-- Node: branch tip (push target) -->
+        android:fillColor="#FFFFFF" />
     <path
         android:pathData="M70,65 m-7.5,0 a7.5,7.5 0 1,0 15,0 a7.5,7.5 0 1,0 -15,0"
-        android:fillColor="#FF8A5B" />
+        android:fillColor="#FFFFFF" />
 </vector>

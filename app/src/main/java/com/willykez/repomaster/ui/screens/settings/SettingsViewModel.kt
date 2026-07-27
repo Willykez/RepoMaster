@@ -3,14 +3,18 @@ package com.willykez.repomaster.ui.screens.settings
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.willykez.repomaster.App
+import com.willykez.repomaster.data.AutomationPrefs
 import com.willykez.repomaster.data.GitIdentityPrefs
 import com.willykez.repomaster.data.PublicStorage
+import com.willykez.repomaster.data.db.entity.RepoEntity
 import com.willykez.repomaster.sync.SyncPrefs
 import com.willykez.repomaster.sync.SyncScheduler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -22,6 +26,8 @@ data class SettingsUiState(
     val storageRootPath: String = "",
     val apkCacheBytes: Long = 0L,
     val isCalculatingCache: Boolean = false,
+    val allRepos: List<RepoEntity> = emptyList(),
+    val automatedRepoIds: Set<Long> = emptySet(),
     val message: String? = null,
 )
 
@@ -34,11 +40,28 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             authorName = GitIdentityPrefs.currentName(app),
             authorEmail = GitIdentityPrefs.currentEmail(app),
             storageRootPath = PublicStorage.rootDir().absolutePath,
+            automatedRepoIds = AutomationPrefs.enabledRepoIds(app),
         ),
     )
     val uiState: StateFlow<SettingsUiState> = _state.asStateFlow()
 
-    init { refreshCacheSize() }
+    init {
+        refreshCacheSize()
+        loadRepos()
+    }
+
+    private fun loadRepos() {
+        viewModelScope.launch {
+            val repos = (getApplication<App>()).repoRepository.allRepos.first()
+            _state.value = _state.value.copy(allRepos = repos)
+        }
+    }
+
+    fun setAutomatedRepoIds(ids: Set<Long>) {
+        val app = getApplication<android.app.Application>()
+        AutomationPrefs.setEnabledRepoIds(app, ids)
+        _state.value = _state.value.copy(automatedRepoIds = ids)
+    }
 
     fun setBackgroundSyncEnabled(enabled: Boolean) {
         val app = getApplication<android.app.Application>()

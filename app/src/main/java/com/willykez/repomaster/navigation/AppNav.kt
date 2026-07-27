@@ -69,6 +69,7 @@ object Routes {
     const val CREDENTIALS = "credentials"
     const val DISCOVER   = "discover"
     const val SETTINGS   = "settings"
+    const val APK_DOWNLOADS = "apk_downloads"
     const val BRANCHES   = "branches/{repoId}"
     const val DIFF       = "diff/{repoId}/{encodedPath}/{staged}"
     const val STASH      = "stash/{repoId}"
@@ -265,7 +266,15 @@ private fun RepoMasterNavHost(
             }
         }
 
-        composable(Routes.SETTINGS) { SettingsScreen(onBack = { nav.popBackStack() }) }
+        composable(Routes.SETTINGS) {
+            SettingsScreen(
+                onBack = { nav.popBackStack() },
+                onOpenApkDownloads = { nav.navigate(Routes.APK_DOWNLOADS) },
+            )
+        }
+        composable(Routes.APK_DOWNLOADS) {
+            com.willykez.repomaster.ui.screens.apkexplorer.ApkExplorerScreen(onBack = { nav.popBackStack() })
+        }
         composable(Routes.DISCOVER) { DiscoverScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.CREDENTIALS) { CredentialScreen(onBack = { nav.popBackStack() }) }
 

@@ -39,7 +39,7 @@ private val INTERVAL_OPTIONS = listOf(1L, 3L, 6L, 12L, 24L)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(onBack: () -> Unit, vm: SettingsViewModel = viewModel()) {
+fun SettingsScreen(onBack: () -> Unit, onOpenApkDownloads: () -> Unit = {}, vm: SettingsViewModel = viewModel()) {
     val state by vm.uiState.collectAsState()
     val context = LocalContext.current
     val snack = remember { SnackbarHostState() }
@@ -52,6 +52,7 @@ fun SettingsScreen(onBack: () -> Unit, vm: SettingsViewModel = viewModel()) {
     var showAppearanceSheet by remember { mutableStateOf(false) }
     var showIdentityDialog by remember { mutableStateOf(false) }
     var showSyncIntervalDialog by remember { mutableStateOf(false) }
+    var showAutomationDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(state.message) { state.message?.let { snack.showSnackbar(it); vm.dismissMessage() } }
 
@@ -137,6 +138,17 @@ fun SettingsScreen(onBack: () -> Unit, vm: SettingsViewModel = viewModel()) {
                 )
             }
 
+            GroupedListSection("Automation") {
+                GroupedListItem(GroupPosition.ONLY) {
+                    SettingsRow(
+                        icon = Icons.Filled.Bolt,
+                        title = "Auto-commit \u0026 push",
+                        subtitle = if (state.automatedRepoIds.isEmpty()) "Off" else "${state.automatedRepoIds.size} repo(s) selected",
+                        onClick = { showAutomationDialog = true },
+                    )
+                }
+            }
+
             GroupedListSection("Storage") {
                 GroupedListItem(GroupPosition.TOP) {
                     SettingsRow(
@@ -145,11 +157,19 @@ fun SettingsScreen(onBack: () -> Unit, vm: SettingsViewModel = viewModel()) {
                         subtitle = state.storageRootPath,
                     )
                 }
+                GroupedListItem(GroupPosition.MIDDLE) {
+                    SettingsRow(
+                        icon = Icons.Filled.Android,
+                        title = "Downloaded APKs",
+                        subtitle = if (state.isCalculatingCache) "Calculating…" else formatBytes(state.apkCacheBytes),
+                        onClick = onOpenApkDownloads,
+                    )
+                }
                 GroupedListItem(GroupPosition.BOTTOM) {
                     SettingsRow(
                         icon = Icons.Filled.DeleteSweep,
-                        title = "Downloaded APK cache",
-                        subtitle = if (state.isCalculatingCache) "Calculating…" else formatBytes(state.apkCacheBytes),
+                        title = "Clear APK cache",
+                        subtitle = "Removes every downloaded build — re-download anytime from Actions",
                         trailing = {
                             TextButton(onClick = vm::clearApkCache, enabled = state.apkCacheBytes > 0) { Text("Clear") }
                         },
@@ -203,6 +223,62 @@ fun SettingsScreen(onBack: () -> Unit, vm: SettingsViewModel = viewModel()) {
             confirmButton = { TextButton(onClick = { showSyncIntervalDialog = false }) { Text("Done") } },
         )
     }
+
+    if (showAutomationDialog) {
+        AutomationDialog(
+            repos = state.allRepos,
+            selectedIds = state.automatedRepoIds,
+            onSave = { vm.setAutomatedRepoIds(it); showAutomationDialog = false },
+            onDismiss = { showAutomationDialog = false },
+        )
+    }
+}
+
+@Composable
+private fun AutomationDialog(
+    repos: List<com.willykez.repomaster.data.db.entity.RepoEntity>,
+    selectedIds: Set<Long>,
+    onSave: (Set<Long>) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var working by remember(selectedIds) { mutableStateOf(selectedIds) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Auto-commit \u0026 push") },
+        text = {
+            Column {
+                Row(verticalAlignment = Alignment.Top) {
+                    Icon(Icons.Filled.WarningAmber, null, Modifier.size(16.dp).padding(top = 2.dp), tint = Amber)
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "During background sync, any selected repo with local changes gets everything staged, committed, and pushed automatically — with nobody reviewing the diff first. Only enable this for repos where that's genuinely fine, like scratch notes or generated output.",
+                        style = MaterialTheme.typography.bodySmall, color = StatusClean,
+                    )
+                }
+                Spacer(Modifier.height(14.dp))
+                if (repos.isEmpty()) {
+                    Text("No repos tracked yet.", style = MaterialTheme.typography.bodySmall, color = StatusClean)
+                } else {
+                    repos.forEach { repo ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable {
+                                working = if (repo.id in working) working - repo.id else working + repo.id
+                            }.padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(checked = repo.id in working, onCheckedChange = {
+                                working = if (it) working + repo.id else working - repo.id
+                            })
+                            Spacer(Modifier.width(8.dp))
+                            Text(repo.name, maxLines = 1)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onSave(working) }) { Text("Save") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 private fun formatInterval(hours: Long) = if (hours < 24) "${hours}h" else "1 day"
