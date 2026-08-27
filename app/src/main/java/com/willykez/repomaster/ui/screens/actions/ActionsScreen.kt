@@ -291,7 +291,7 @@ fun ActionsScreen(repoId: Long, onBack: () -> Unit, vm: ActionsViewModel = viewM
                         IconButton(onClick = {
                             openUrl(context, "https://github.com/$fullName/actions")
                         }) {
-                            Icon(Icons.Filled.OpenInNew, "View on GitHub")
+                            Icon(Icons.Filled.Public, "View on GitHub")
                         }
                     }
                 },
@@ -476,7 +476,7 @@ private fun RunCard(
                 if (run.htmlUrl.isNotBlank()) {
                     val context = LocalContext.current
                     IconButton(onClick = { openUrl(context, run.htmlUrl) }, modifier = Modifier.size(28.dp)) {
-                        Icon(Icons.Filled.OpenInNew, "View on GitHub", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Icon(Icons.Filled.Public, "View on GitHub", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
