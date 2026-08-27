@@ -33,6 +33,17 @@ android {
     }
 
 
+    // -------------------------------------------------------
+    // Release signing
+    //
+    // Supplied by GitHub Actions:
+    //
+    // REPOMASTER_RELEASE_STORE_FILE
+    // REPOMASTER_RELEASE_STORE_PASSWORD
+    // REPOMASTER_RELEASE_KEY_ALIAS
+    // REPOMASTER_RELEASE_KEY_PASSWORD
+    // -------------------------------------------------------
+
     val releaseStoreFile =
         findProperty("REPOMASTER_RELEASE_STORE_FILE") as String?
 

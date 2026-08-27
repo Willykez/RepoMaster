@@ -6,13 +6,15 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -20,6 +22,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -28,18 +32,22 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.willykez.repomaster.App
+import com.willykez.repomaster.data.ExplorerPrefs
+import com.willykez.repomaster.data.ExplorerSortMode
 import com.willykez.repomaster.data.db.entity.RepoEntity
 import com.willykez.repomaster.git.FileNode
 import com.willykez.repomaster.git.GitEngine
+import com.willykez.repomaster.git.GitFileStatus
 import com.willykez.repomaster.git.GitResult
-import com.willykez.repomaster.ui.components.GlassCard
 import com.willykez.repomaster.ui.components.RepoTitleBlock
 import com.willykez.repomaster.ui.screens.changes.ConfirmDialog
 import com.willykez.repomaster.ui.screens.changes.SingleInputDialog
-import com.willykez.repomaster.ui.theme.Amber
 import com.willykez.repomaster.ui.theme.CommandBlue
+import com.willykez.repomaster.ui.theme.Emerald
+import com.willykez.repomaster.ui.theme.StatusAdded
 import com.willykez.repomaster.ui.theme.StatusClean
 import com.willykez.repomaster.ui.theme.StatusDeleted
+import com.willykez.repomaster.ui.theme.StatusModified
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -48,10 +56,28 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
+/** One row as actually rendered in the flattened tree. [node]'s `relativePath` is always the
+ *  real on-disk path to operate on (stage/delete/rename/expand); `node.name` may be a
+ *  slash-joined chain like "app/src/main" when [ExplorerPrefs.compactFolders] merged a run of
+ *  single-child folders into one row — see [FileExplorerViewModel.listChildren]. */
+data class TreeRow(
+    val node: FileNode,
+    val depth: Int,
+    val isExpanded: Boolean,
+    val gitStatus: GitFileStatus?,
+    val hasDirtyDescendant: Boolean,
+    val isCompactedChain: Boolean,
+)
+
 data class ExplorerUiState(
     val repo: RepoEntity? = null,
-    val relativePath: String = "",
-    val nodes: List<FileNode> = emptyList(),
+    val childrenCache: Map<String, List<FileNode>> = emptyMap(), // "" = root
+    val expandedPaths: Set<String> = emptySet(),
+    val gitStatusByPath: Map<String, GitFileStatus> = emptyMap(),
+    val visibleRows: List<TreeRow> = emptyList(),
+    val showHiddenFiles: Boolean = false,
+    val compactFolders: Boolean = true,
+    val sortMode: ExplorerSortMode = ExplorerSortMode.NAME,
     val isLoading: Boolean = true,
     val isBusy: Boolean = false,
     val message: String? = null,
@@ -65,39 +91,198 @@ class FileExplorerViewModel(app: Application) : AndroidViewModel(app) {
     private val _uiState = MutableStateFlow(ExplorerUiState())
     val uiState: StateFlow<ExplorerUiState> = _uiState.asStateFlow()
 
-    fun load(repoId: Long, relativePath: String) {
+    /** [revealPath] (optional) auto-expands the ancestor chain of a specific file so it's
+     *  visible on first load — used by the `repomaster://repo/{id}` deep link. Best-effort:
+     *  if compact-folder chains don't line up with the raw path segments, this simply expands
+     *  as far as it cleanly can rather than guessing. */
+    fun load(repoId: Long, revealPath: String = "") {
         viewModelScope.launch {
             val repo = repoRepo.getById(repoId) ?: return@launch
-            _uiState.value = _uiState.value.copy(repo = repo, relativePath = relativePath, isLoading = true)
+            _uiState.value = _uiState.value.copy(
+                repo = repo, isLoading = true,
+                showHiddenFiles = ExplorerPrefs.showHiddenFiles(appRef),
+                compactFolders = ExplorerPrefs.compactFolders(appRef),
+                sortMode = ExplorerPrefs.sortMode(appRef),
+            )
             refresh()
+            if (revealPath.isNotBlank()) revealAncestors(revealPath)
         }
     }
 
-    private fun currentDir(): File? {
-        val repo = _uiState.value.repo ?: return null
-        val relativePath = _uiState.value.relativePath
-        return if (relativePath.isBlank()) File(repo.fullSavePath) else File(repo.fullSavePath, relativePath)
-    }
+    private fun currentDir(): File? = _uiState.value.repo?.let { File(it.fullSavePath) }
 
+    /** Re-lists the root and every currently-expanded folder, then re-scans git status —
+     *  called after any mutation and by pull-to-refresh. Expand state survives a refresh (the
+     *  tree doesn't collapse just because something changed), the same way a code editor's
+     *  file tree keeps folders open across a background re-index. */
     private suspend fun refresh() {
         val repo = _uiState.value.repo ?: return
-        val relativePath = _uiState.value.relativePath
-        val nodes = withContext(Dispatchers.IO) {
-            val dir = if (relativePath.isBlank()) File(repo.fullSavePath) else File(repo.fullSavePath, relativePath)
-            val children = dir.listFiles()?.toList() ?: emptyList()
-            children
-                .filter { it.name != ".git" || relativePath.isNotBlank() } // hide the .git folder at repo root
-                .sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() }))
-                .map {
-                    FileNode(
-                        name = it.name,
-                        relativePath = if (relativePath.isBlank()) it.name else "$relativePath/${it.name}",
-                        isDirectory = it.isDirectory,
-                        sizeBytes = if (it.isFile) it.length() else 0L,
-                    )
-                }
+        val newCache = mutableMapOf<String, List<FileNode>>()
+        newCache[""] = listChildren(repo, "")
+        for (path in _uiState.value.expandedPaths) {
+            newCache[path] = listChildren(repo, path)
         }
-        _uiState.value = _uiState.value.copy(nodes = nodes, isLoading = false)
+        val statusMap = scanGitStatus(repo)
+        _uiState.value = _uiState.value.copy(childrenCache = newCache, gitStatusByPath = statusMap, isLoading = false)
+        recomputeVisibleRows()
+    }
+
+    fun toggleExpand(node: FileNode) {
+        if (!node.isDirectory) return
+        val path = node.relativePath
+        val expanded = _uiState.value.expandedPaths
+        if (path in expanded) {
+            _uiState.value = _uiState.value.copy(expandedPaths = expanded - path)
+            recomputeVisibleRows()
+            return
+        }
+        viewModelScope.launch {
+            val repo = _uiState.value.repo ?: return@launch
+            if (path !in _uiState.value.childrenCache) {
+                val kids = listChildren(repo, path)
+                _uiState.value = _uiState.value.copy(childrenCache = _uiState.value.childrenCache + (path to kids))
+            }
+            _uiState.value = _uiState.value.copy(expandedPaths = _uiState.value.expandedPaths + path)
+            recomputeVisibleRows()
+        }
+    }
+
+    fun collapseAll() {
+        _uiState.value = _uiState.value.copy(expandedPaths = emptySet())
+        recomputeVisibleRows()
+    }
+
+    private suspend fun revealAncestors(path: String) {
+        val repo = _uiState.value.repo ?: return
+        val segments = path.split("/").dropLast(1)
+        var current = ""
+        for (seg in segments) {
+            current = if (current.isBlank()) seg else "$current/$seg"
+            if (current !in _uiState.value.childrenCache) {
+                val kids = listChildren(repo, current)
+                _uiState.value = _uiState.value.copy(childrenCache = _uiState.value.childrenCache + (current to kids))
+            }
+            _uiState.value = _uiState.value.copy(expandedPaths = _uiState.value.expandedPaths + current)
+        }
+        recomputeVisibleRows()
+    }
+
+    /** Lists one directory's immediate children for tree display — hidden-file filtering,
+     *  sort order, and single-child folder-chain compaction all happen here, in one place,
+     *  so [refresh] and [toggleExpand] can't drift out of sync on how a folder gets listed. */
+    private suspend fun listChildren(repo: RepoEntity, path: String): List<FileNode> = withContext(Dispatchers.IO) {
+        val showHidden = _uiState.value.showHiddenFiles
+        val compact = _uiState.value.compactFolders
+        val sortMode = _uiState.value.sortMode
+
+        val dir = if (path.isBlank()) File(repo.fullSavePath) else File(repo.fullSavePath, path)
+        val raw = dir.listFiles()?.toList() ?: emptyList()
+        val filtered = raw.filter { f ->
+            (f.name != ".git" || path.isNotBlank()) && (showHidden || !f.name.startsWith("."))
+        }
+        val sorted = sortEntries(filtered, sortMode)
+
+        sorted.map { f ->
+            val relPath = if (path.isBlank()) f.name else "$path/${f.name}"
+            if (f.isDirectory && compact) {
+                val (finalPath, chainNames) = compactChain(f, relPath, showHidden)
+                FileNode(name = chainNames.joinToString("/"), relativePath = finalPath, isDirectory = true, sizeBytes = 0L)
+            } else {
+                FileNode(name = f.name, relativePath = relPath, isDirectory = f.isDirectory, sizeBytes = if (f.isFile) f.length() else 0L)
+            }
+        }
+    }
+
+    /** Walks forward through a chain of folders that each contain exactly one subfolder,
+     *  merging their names ("app" -> "app/src" -> "app/src/main") until hitting a folder with
+     *  zero, one file, or 2+ children — the point where showing them as separate rows again
+     *  actually carries information. Same convention as a desktop IDE's "compact folders." */
+    private fun compactChain(startDir: File, startRelPath: String, showHidden: Boolean): Pair<String, List<String>> {
+        var dir = startDir
+        var relPath = startRelPath
+        val names = mutableListOf(startDir.name)
+        while (true) {
+            val kids = dir.listFiles()?.filter { showHidden || !it.name.startsWith(".") } ?: emptyList()
+            val onlyChild = kids.singleOrNull() ?: break
+            if (!onlyChild.isDirectory) break
+            dir = onlyChild
+            relPath = "$relPath/${onlyChild.name}"
+            names.add(onlyChild.name)
+        }
+        return relPath to names
+    }
+
+    private fun sortEntries(files: List<File>, mode: ExplorerSortMode): List<File> {
+        val (dirs, plain) = files.partition { it.isDirectory }
+        val comparator: Comparator<File> = when (mode) {
+            ExplorerSortMode.NAME -> compareBy { it.name.lowercase() }
+            ExplorerSortMode.SIZE -> compareByDescending { it.length() }
+            ExplorerSortMode.DATE -> compareByDescending { it.lastModified() }
+        }
+        // Folders always sort before files regardless of mode — sorting a folder "by size"
+        // doesn't mean much (it'd need a recursive size scan), so size/date sorting only
+        // really applies within each group.
+        return dirs.sortedWith(comparator) + plain.sortedWith(comparator)
+    }
+
+    private suspend fun scanGitStatus(repo: RepoEntity): Map<String, GitFileStatus> {
+        return when (val opened = GitEngine.openRepo(repo.fullSavePath)) {
+            is GitResult.Error -> emptyMap()
+            is GitResult.Success -> {
+                val git = opened.data
+                val map = when (val r = GitEngine.getStatus(git)) {
+                    is GitResult.Success -> r.data.associate { it.path to it.status }
+                    is GitResult.Error -> emptyMap()
+                }
+                git.close()
+                map
+            }
+        }
+    }
+
+    private fun recomputeVisibleRows() {
+        val s = _uiState.value
+        val dirtyDirs = mutableSetOf<String>()
+        for (p in s.gitStatusByPath.keys) {
+            var idx = p.lastIndexOf('/')
+            while (idx > 0) {
+                dirtyDirs.add(p.substring(0, idx))
+                idx = p.lastIndexOf('/', idx - 1)
+            }
+        }
+        val rows = mutableListOf<TreeRow>()
+        fun walk(children: List<FileNode>, depth: Int) {
+            for (child in children) {
+                val isExpanded = child.isDirectory && child.relativePath in s.expandedPaths
+                rows += TreeRow(
+                    node = child, depth = depth, isExpanded = isExpanded,
+                    gitStatus = s.gitStatusByPath[child.relativePath],
+                    hasDirtyDescendant = child.relativePath in dirtyDirs,
+                    isCompactedChain = child.isDirectory && child.name.contains('/'),
+                )
+                if (isExpanded) walk(s.childrenCache[child.relativePath] ?: emptyList(), depth + 1)
+            }
+        }
+        walk(s.childrenCache[""] ?: emptyList(), 0)
+        _uiState.value = s.copy(visibleRows = rows)
+    }
+
+    fun setShowHiddenFiles(value: Boolean) {
+        ExplorerPrefs.setShowHiddenFiles(appRef, value)
+        _uiState.value = _uiState.value.copy(showHiddenFiles = value)
+        viewModelScope.launch { refresh() }
+    }
+
+    fun setCompactFolders(value: Boolean) {
+        ExplorerPrefs.setCompactFolders(appRef, value)
+        _uiState.value = _uiState.value.copy(compactFolders = value)
+        viewModelScope.launch { refresh() }
+    }
+
+    fun setSortMode(mode: ExplorerSortMode) {
+        ExplorerPrefs.setSortMode(appRef, mode)
+        _uiState.value = _uiState.value.copy(sortMode = mode)
+        viewModelScope.launch { refresh() }
     }
 
     fun rename(node: FileNode, newName: String) {
@@ -159,6 +344,7 @@ class FileExplorerViewModel(app: Application) : AndroidViewModel(app) {
                         isBusy = false,
                         message = if (failed == 0) "Staged ${nodes.size} item(s)" else "Staged ${nodes.size - failed} of ${nodes.size} — $failed failed",
                     )
+                    refresh()
                 }
             }
         }
@@ -191,6 +377,11 @@ class FileExplorerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** New file/folder/import all target the repo root — there's no more "current folder"
+     *  concept now that the whole tree is one always-expandable view instead of navigating
+     *  screen-to-screen. Trade-off worth knowing: creating something inside a deeply nested
+     *  folder means creating it at the root and dragging it in a file manager, or renaming it
+     *  with the folder prefix in its name. */
     fun createFile(name: String) {
         val dir = currentDir() ?: return
         viewModelScope.launch {
@@ -226,7 +417,7 @@ class FileExplorerViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Copies one or more picked files (from the system file manager / photos app / etc,
-     * via SAF) into the current folder, preserving their original filenames where possible. */
+     * via SAF) into the repo root, preserving their original filenames where possible. */
     fun importFiles(context: Context, uris: List<Uri>) {
         val dir = currentDir() ?: return
         if (uris.isEmpty()) return
@@ -266,8 +457,7 @@ class FileExplorerViewModel(app: Application) : AndroidViewModel(app) {
                         ?: return@withContext "Couldn't open that folder"
                     val destRoot = File(dir, pickedRoot.name ?: "imported_folder")
                     if (destRoot.exists()) return@withContext "A folder named \"${destRoot.name}\" already exists"
-                    var fileCount = 0
-                    fileCount = copyDocumentTree(context, pickedRoot, destRoot)
+                    val fileCount = copyDocumentTree(context, pickedRoot, destRoot)
                     "Imported ${destRoot.name} ($fileCount file(s))"
                 } catch (e: Exception) {
                     e.message ?: "Import failed"
@@ -333,13 +523,14 @@ class FileExplorerViewModel(app: Application) : AndroidViewModel(app) {
     }
 }
 
+private val TREE_INDENT = 18.dp
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FileExplorerScreen(
     repoId: Long,
-    relativePath: String,
+    revealPath: String = "",
     onBack: () -> Unit,
-    onOpenFolder: (String) -> Unit,
     onOpenFile: (String) -> Unit,
     onOpenBlame: (String) -> Unit,
     onOpenSearch: () -> Unit = {},
@@ -350,11 +541,12 @@ fun FileExplorerScreen(
     val context = LocalContext.current
     var nodePendingRename by remember { mutableStateOf<FileNode?>(null) }
     var nodePendingDelete by remember { mutableStateOf<FileNode?>(null) }
-    var fabExpanded by remember { mutableStateOf(false) }
     var showNewFileDialog by remember { mutableStateOf(false) }
     var showNewFolderDialog by remember { mutableStateOf(false) }
     var selectedPaths by remember { mutableStateOf(setOf<String>()) }
     var showBulkDeleteConfirm by remember { mutableStateOf(false) }
+    var fabExpanded by remember { mutableStateOf(false) }
+    var showOverflowMenu by remember { mutableStateOf(false) }
     val selectionMode = selectedPaths.isNotEmpty()
 
     val importFilesLauncher = rememberLauncherForActivityResult(
@@ -365,15 +557,15 @@ fun FileExplorerScreen(
         ActivityResultContracts.OpenDocumentTree(),
     ) { uri -> uri?.let { vm.importFolder(context, it) } }
 
-    LaunchedEffect(repoId, relativePath) { vm.load(repoId, relativePath) }
+    LaunchedEffect(repoId) { vm.load(repoId, revealPath) }
     LaunchedEffect(state.message) {
         state.message?.let { snack.showSnackbar(it); vm.dismissMessage() }
     }
-    // Selection only makes sense against the currently-listed files — if the folder
-    // refreshes out from under an active selection (rename/delete elsewhere, pull, etc.)
-    // just drop it rather than risk acting on paths that no longer exist here.
-    LaunchedEffect(state.nodes) {
-        val currentPaths = state.nodes.map { it.relativePath }.toSet()
+    // Selection only makes sense against rows still on screen — if the tree refreshes out
+    // from under an active selection (rename/delete elsewhere, a pull, etc.) just drop
+    // whatever's no longer visible rather than risk acting on stale paths.
+    LaunchedEffect(state.visibleRows) {
+        val currentPaths = state.visibleRows.map { it.node.relativePath }.toSet()
         if (selectedPaths.any { it !in currentPaths }) selectedPaths = selectedPaths.intersect(currentPaths)
     }
 
@@ -386,7 +578,7 @@ fun FileExplorerScreen(
                         IconButton(onClick = { selectedPaths = emptySet() }) { Icon(Icons.Filled.Close, "Cancel selection") }
                     },
                     actions = {
-                        val selectedNodes = state.nodes.filter { it.relativePath in selectedPaths }
+                        val selectedNodes = state.visibleRows.map { it.node }.filter { it.relativePath in selectedPaths }
                         IconButton(onClick = { vm.bulkStage(selectedNodes); selectedPaths = emptySet() }, enabled = !state.isBusy) {
                             Icon(Icons.Filled.AddCircleOutline, "Stage selected")
                         }
@@ -397,13 +589,7 @@ fun FileExplorerScreen(
                 )
             } else {
                 TopAppBar(
-                    title = {
-                        if (state.relativePath.isBlank()) {
-                            RepoTitleBlock(state.repo?.name ?: "Files", state.repo?.branch)
-                        } else {
-                            Text(state.relativePath.substringAfterLast('/'), fontWeight = FontWeight.SemiBold)
-                        }
-                    },
+                    title = { RepoTitleBlock(state.repo?.name ?: "Files", state.repo?.branch) },
                     navigationIcon = {
                         IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
                     },
@@ -414,6 +600,31 @@ fun FileExplorerScreen(
                         IconButton(onClick = vm::push, enabled = !state.isBusy) {
                             if (state.isBusy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                             else Icon(Icons.Filled.ArrowUpward, "Push")
+                        }
+                        Box {
+                            IconButton(onClick = { showOverflowMenu = true }) { Icon(Icons.Filled.MoreVert, "Tree options") }
+                            DropdownMenu(expanded = showOverflowMenu, onDismissRequest = { showOverflowMenu = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("Show hidden files") },
+                                    trailingIcon = { Checkbox(checked = state.showHiddenFiles, onCheckedChange = null) },
+                                    onClick = { vm.setShowHiddenFiles(!state.showHiddenFiles) },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Compact folders") },
+                                    trailingIcon = { Checkbox(checked = state.compactFolders, onCheckedChange = null) },
+                                    onClick = { vm.setCompactFolders(!state.compactFolders) },
+                                )
+                                HorizontalDivider()
+                                SortModeItem("Sort by name", ExplorerSortMode.NAME, state.sortMode) { vm.setSortMode(it); showOverflowMenu = false }
+                                SortModeItem("Sort by size", ExplorerSortMode.SIZE, state.sortMode) { vm.setSortMode(it); showOverflowMenu = false }
+                                SortModeItem("Sort by date", ExplorerSortMode.DATE, state.sortMode) { vm.setSortMode(it); showOverflowMenu = false }
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = { Text("Collapse all") },
+                                    leadingIcon = { Icon(Icons.Filled.UnfoldLess, null) },
+                                    onClick = { vm.collapseAll(); showOverflowMenu = false },
+                                )
+                            }
                         }
                     },
                 )
@@ -433,78 +644,54 @@ fun FileExplorerScreen(
         },
         snackbarHost = { SnackbarHost(snack) { d -> Snackbar(d) } },
     ) { pad ->
-        if (state.isLoading) {
-            Box(Modifier.fillMaxSize().padding(pad), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-        } else if (state.nodes.isEmpty()) {
-            Box(Modifier.fillMaxSize().padding(pad), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Empty folder", color = StatusClean)
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "Tap + to create a file, or import from your file manager",
-                        style = MaterialTheme.typography.bodySmall, color = StatusClean,
-                    )
-                }
-            }
-        } else {
-            LazyColumn(
-                contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 96.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.fillMaxSize().padding(pad),
-            ) {
-                items(state.nodes, key = { it.relativePath }) { node ->
-                    FileRow(
-                        node = node,
-                        selectionMode = selectionMode,
-                        selected = node.relativePath in selectedPaths,
-                        onClick = {
-                            if (selectionMode) {
-                                selectedPaths = if (node.relativePath in selectedPaths) selectedPaths - node.relativePath else selectedPaths + node.relativePath
-                            } else if (node.isDirectory) onOpenFolder(node.relativePath) else onOpenFile(node.relativePath)
-                        },
-                        onLongClick = { selectedPaths = selectedPaths + node.relativePath },
-                        onRename = { nodePendingRename = node },
-                        onDelete = { nodePendingDelete = node },
-                        onBlame = { onOpenBlame(node.relativePath) },
-                    )
-                }
-            }
-        }
-
-        if (state.isBusy) {
-            Box(Modifier.fillMaxSize().padding(pad), contentAlignment = Alignment.TopCenter) {
-                LinearProgressIndicator(Modifier.fillMaxWidth())
-            }
-        }
-    }
-
-    nodePendingRename?.let { node ->
-        SingleInputDialog(
-            title = "Rename ${node.name}",
-            label = "New name",
-            initial = node.name,
-            onDismiss = { nodePendingRename = null },
-            onConfirm = { newName -> vm.rename(node, newName); nodePendingRename = null },
-        )
-    }
-
-    nodePendingDelete?.let { node ->
-        ConfirmDialog(
-            title = "Delete ${node.name}?",
-            body = if (node.isDirectory) {
-                "This deletes the folder and everything inside it, and stages the removal — commit and push to remove it from the remote too."
-            } else {
-                "This stages the removal — commit and push to remove it from the remote too. Can't be undone locally."
+        Box(
+            Modifier.fillMaxSize().let {
+                if (fabExpanded) it.clickable(
+                    interactionSource = remember { MutableInteractionSource() }, indication = null,
+                ) { fabExpanded = false } else it
             },
-            confirmLabel = "Delete",
-            danger = true,
-            onDismiss = { nodePendingDelete = null },
-            onConfirm = { vm.delete(node); nodePendingDelete = null },
-        )
+        ) {
+            when {
+                state.isLoading -> Box(Modifier.fillMaxSize().padding(pad), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                state.visibleRows.isEmpty() -> Box(Modifier.fillMaxSize().padding(pad), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("Empty folder", color = StatusClean)
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Tap + to create a file, or import from your file manager",
+                            style = MaterialTheme.typography.bodySmall, color = StatusClean,
+                        )
+                    }
+                }
+                else -> LazyColumn(
+                    contentPadding = PaddingValues(top = 4.dp, bottom = 96.dp),
+                    modifier = Modifier.fillMaxSize().padding(pad),
+                ) {
+                    items(state.visibleRows, key = { it.node.relativePath }) { row ->
+                        TreeRowItem(
+                            row = row,
+                            selectionMode = selectionMode,
+                            selected = row.node.relativePath in selectedPaths,
+                            onClick = {
+                                when {
+                                    selectionMode -> selectedPaths = if (row.node.relativePath in selectedPaths) selectedPaths - row.node.relativePath else selectedPaths + row.node.relativePath
+                                    row.node.isDirectory -> vm.toggleExpand(row.node)
+                                    else -> onOpenFile(row.node.relativePath)
+                                }
+                            },
+                            onLongClick = { selectedPaths = selectedPaths + row.node.relativePath },
+                            onRename = { nodePendingRename = row.node },
+                            onDelete = { nodePendingDelete = row.node },
+                            onBlame = { onOpenBlame(row.node.relativePath) },
+                        )
+                    }
+                }
+            }
+        }
     }
 
     if (showBulkDeleteConfirm) {
-        val selectedNodes = state.nodes.filter { it.relativePath in selectedPaths }
+        val selectedNodes = state.visibleRows.map { it.node }.filter { it.relativePath in selectedPaths }
         ConfirmDialog(
             title = "Delete ${selectedNodes.size} item(s)?",
             body = "This stages the removal of everything selected — commit and push to remove it from the remote too. Can't be undone locally.",
@@ -516,29 +703,171 @@ fun FileExplorerScreen(
     }
 
     if (showNewFileDialog) {
-        SingleInputDialog(
-            title = "New File",
-            label = "File name",
-            initial = "",
-            onDismiss = { showNewFileDialog = false },
-            onConfirm = { name -> vm.createFile(name); showNewFileDialog = false },
-        )
+        SingleInputDialog("New File", "File name", "",
+            onConfirm = { vm.createFile(it); showNewFileDialog = false }, onDismiss = { showNewFileDialog = false })
     }
-
     if (showNewFolderDialog) {
-        SingleInputDialog(
-            title = "New Folder",
-            label = "Folder name",
-            initial = "",
-            onDismiss = { showNewFolderDialog = false },
-            onConfirm = { name -> vm.createFolder(name); showNewFolderDialog = false },
+        SingleInputDialog("New Folder", "Folder name", "",
+            onConfirm = { vm.createFolder(it); showNewFolderDialog = false }, onDismiss = { showNewFolderDialog = false })
+    }
+    nodePendingRename?.let { node ->
+        SingleInputDialog("Rename", "New name", node.name.substringAfterLast('/'),
+            onConfirm = { vm.rename(node, it); nodePendingRename = null }, onDismiss = { nodePendingRename = null })
+    }
+    nodePendingDelete?.let { node ->
+        ConfirmDialog(
+            title = "Delete ${node.name}?",
+            body = if (node.isDirectory) "Deletes this folder and everything inside it, and stages the removal."
+                   else "Stages the removal — commit and push to remove it from the remote too.",
+            confirmLabel = "Delete", danger = true,
+            onDismiss = { nodePendingDelete = null },
+            onConfirm = { vm.delete(node); nodePendingDelete = null },
         )
     }
 }
 
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun SortModeItem(label: String, mode: ExplorerSortMode, current: ExplorerSortMode, onSelect: (ExplorerSortMode) -> Unit) {
+    DropdownMenuItem(
+        text = { Text(label) },
+        leadingIcon = {
+            Icon(
+                if (current == mode) Icons.Filled.RadioButtonChecked else Icons.Filled.RadioButtonUnchecked,
+                null, tint = if (current == mode) CommandBlue else StatusClean,
+            )
+        },
+        onClick = { onSelect(mode) },
+    )
+}
+
 /**
- * Every way to add something to this folder, in one place — replaces what used to be a
+ * One row in the flattened tree. Deliberately flat (no per-row card/border) rather than the
+ * GlassCard-per-item treatment used elsewhere in the app — a dense tree with rounded card
+ * chrome around every single row, several levels deep, stops reading as a tree at all. The
+ * screen's own background carries the "glass" identity; individual rows are plain, VS
+ * Code-style list items with indentation guides doing the visual structuring instead.
+ */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun TreeRowItem(
+    row: TreeRow,
+    selectionMode: Boolean,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    onRename: () -> Unit,
+    onDelete: () -> Unit,
+    onBlame: () -> Unit,
+) {
+    val node = row.node
+    var showMenu by remember { mutableStateOf(false) }
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
+    val (icon, iconTint) = fileIconFor(node)
+
+    val statusColor = when (row.gitStatus) {
+        GitFileStatus.ADDED -> StatusAdded
+        GitFileStatus.MODIFIED, GitFileStatus.RENAMED, GitFileStatus.TYPE_CHANGED -> StatusModified
+        GitFileStatus.DELETED, GitFileStatus.CONFLICTED -> StatusDeleted
+        null -> null
+    }
+    val statusLetter = when (row.gitStatus) {
+        GitFileStatus.ADDED -> "A"
+        GitFileStatus.MODIFIED -> "M"
+        GitFileStatus.DELETED -> "D"
+        GitFileStatus.RENAMED -> "R"
+        GitFileStatus.TYPE_CHANGED -> "T"
+        GitFileStatus.CONFLICTED -> "!"
+        null -> null
+    }
+
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = {
+                    haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                    onLongClick()
+                },
+            )
+            .background(if (selected) CommandBlue.copy(alpha = 0.14f) else androidx.compose.ui.graphics.Color.Transparent)
+            .padding(vertical = 7.dp, horizontal = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // Indentation guide lines — one thin vertical rule per ancestor level, the classic
+        // tree "ladder" so nesting depth reads at a glance even before you look at the icons.
+        repeat(row.depth) {
+            Box(Modifier.width(TREE_INDENT).fillMaxHeight()) {
+                Box(
+                    Modifier.width(1.dp).fillMaxHeight().align(Alignment.Center)
+                        .background(StatusClean.copy(alpha = 0.18f)),
+                )
+            }
+        }
+
+        Box(Modifier.width(20.dp), contentAlignment = Alignment.Center) {
+            if (node.isDirectory) {
+                val rotation by androidx.compose.animation.core.animateFloatAsState(if (row.isExpanded) 90f else 0f, label = "chevron")
+                Icon(
+                    Icons.Filled.ChevronRight, null,
+                    modifier = Modifier.size(18.dp).graphicsLayer { rotationZ = rotation },
+                    tint = StatusClean,
+                )
+            }
+        }
+
+        if (selectionMode) {
+            Checkbox(checked = selected, onCheckedChange = { onClick() })
+            Spacer(Modifier.width(2.dp))
+        }
+
+        Icon(icon, null, Modifier.size(18.dp), tint = iconTint)
+        Spacer(Modifier.width(8.dp))
+
+        Text(
+            node.name,
+            style = MaterialTheme.typography.bodyMedium,
+            color = statusColor ?: MaterialTheme.colorScheme.onSurface,
+            fontWeight = if (row.hasDirtyDescendant && node.isDirectory) FontWeight.SemiBold else FontWeight.Normal,
+            maxLines = 1,
+            modifier = Modifier.weight(1f),
+        )
+
+        when {
+            statusLetter != null -> Text(
+                statusLetter, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold,
+                color = statusColor ?: StatusClean, modifier = Modifier.padding(end = 4.dp),
+            )
+            row.hasDirtyDescendant && node.isDirectory -> Box(
+                Modifier.size(6.dp).clip(CircleShape).background(Emerald).padding(end = 4.dp),
+            )
+        }
+
+        // Compacted chain rows ("app/src/main") skip the per-row menu — renaming/deleting a
+        // merged multi-folder row is ambiguous (which segment?), so only the leaf folders you
+        // reach by expanding further, and plain files, get this menu.
+        if (!selectionMode && !row.isCompactedChain) {
+            Box {
+                IconButton(onClick = { showMenu = true }, Modifier.size(30.dp)) {
+                    Icon(Icons.Filled.MoreVert, null, Modifier.size(16.dp), tint = StatusClean)
+                }
+                DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                    DropdownMenuItem(text = { Text("Rename") }, onClick = { showMenu = false; onRename() },
+                        leadingIcon = { Icon(Icons.Filled.Edit, null) })
+                    if (!node.isDirectory) {
+                        DropdownMenuItem(text = { Text("Blame") }, onClick = { showMenu = false; onBlame() },
+                            leadingIcon = { Icon(Icons.Filled.History, null) })
+                    }
+                    DropdownMenuItem(text = { Text("Delete") }, onClick = { showMenu = false; onDelete() },
+                        leadingIcon = { Icon(Icons.Filled.Delete, null, tint = StatusDeleted) })
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Every way to add something to this repo, in one place — replaces what used to be a
  * dropdown mixing file creation with file import. Same speed-dial pattern as the repo list's
  * FAB: tap to reveal four labeled options, tap one to act.
  */
@@ -588,79 +917,4 @@ private fun ExplorerFabOption(label: String, icon: androidx.compose.ui.graphics.
             contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
         ) { Icon(icon, label, modifier = Modifier.size(20.dp)) }
     }
-}
-
-@Composable
-private fun FileRow(
-    node: FileNode,
-    selectionMode: Boolean,
-    selected: Boolean,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit,
-    onRename: () -> Unit,
-    onDelete: () -> Unit,
-    onBlame: () -> Unit,
-) {
-    var showMenu by remember { mutableStateOf(false) }
-    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
-
-    GlassCard(
-        modifier = Modifier.fillMaxWidth().combinedClickable(
-            onClick = onClick,
-            onLongClick = {
-                // The long-press that kicks off multi-select is otherwise silent — no visual
-                // change happens until the checkbox row appears a frame later — so this is
-                // the one spot in the file list a tactile confirmation earns its keep.
-                haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
-                onLongClick()
-            },
-        ),
-        accent = if (selected) Amber else if (node.isDirectory) CommandBlue else MaterialTheme.colorScheme.outline,
-    ) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (selectionMode) {
-                Checkbox(checked = selected, onCheckedChange = { onClick() })
-                Spacer(Modifier.width(4.dp))
-            }
-            Icon(
-                if (node.isDirectory) Icons.Filled.Folder else Icons.Filled.InsertDriveFile,
-                contentDescription = null,
-                tint = if (node.isDirectory) CommandBlue else StatusClean,
-                modifier = Modifier.size(22.dp),
-            )
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Text(node.name, style = MaterialTheme.typography.bodyMedium)
-                if (!node.isDirectory) {
-                    Text(formatSize(node.sizeBytes), style = MaterialTheme.typography.labelSmall, color = StatusClean)
-                }
-            }
-            if (!selectionMode) {
-                Box {
-                    IconButton(onClick = { showMenu = true }, Modifier.size(32.dp)) {
-                        Icon(Icons.Filled.MoreVert, null, Modifier.size(18.dp), tint = StatusClean)
-                    }
-                    DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                        DropdownMenuItem(text = { Text("Rename") }, onClick = { showMenu = false; onRename() },
-                            leadingIcon = { Icon(Icons.Filled.Edit, null) })
-                        if (!node.isDirectory) {
-                            DropdownMenuItem(text = { Text("Blame") }, onClick = { showMenu = false; onBlame() },
-                                leadingIcon = { Icon(Icons.Filled.History, null) })
-                        }
-                        DropdownMenuItem(text = { Text("Delete") }, onClick = { showMenu = false; onDelete() },
-                            leadingIcon = { Icon(Icons.Filled.Delete, null, tint = StatusDeleted) })
-                    }
-                }
-            }
-        }
-    }
-}
-
-private fun formatSize(bytes: Long): String = when {
-    bytes < 1024 -> "$bytes B"
-    bytes < 1024 * 1024 -> "${bytes / 1024} KB"
-    else -> "${bytes / (1024 * 1024)} MB"
 }

@@ -98,6 +98,14 @@ object Routes {
     fun actions(id: Long) = "actions/$id"
     fun blame(id: Long, path: String) = "blame/$id/${java.net.URLEncoder.encode(path, "UTF-8")}"
     fun search(id: Long) = "search/$id"
+
+    // repomaster:// deep links — see the intent-filter in AndroidManifest.xml and the
+    // deepLinks= on EXPLORER/ACTIONS above. Kept as plain strings (not tied to explorer()/
+    // actions() above) since these need to be buildable from outside Compose/NavController
+    // entirely — SyncNotifier builds one of these for a plain Intent, with no NavController
+    // in scope at all.
+    fun deepLinkRepo(id: Long) = "repomaster://repo/$id"
+    fun deepLinkActions(id: Long) = "repomaster://repo/$id/actions"
 }
 
 private data class TabItem(val route: String, val label: String, val icon: androidx.compose.ui.graphics.vector.ImageVector)
@@ -256,9 +264,7 @@ private fun RepoMasterNavHost(
             } else {
                 FileExplorerScreen(
                     repoId = id,
-                    relativePath = "",
                     onBack = { nav.navigate(Routes.REPO_LIST) },
-                    onOpenFolder = { childPath -> nav.navigate(Routes.explorer(id, childPath)) },
                     onOpenFile = { filePath -> nav.navigate(Routes.editor(id, filePath)) },
                     onOpenBlame = { filePath -> nav.navigate(Routes.blame(id, filePath)) },
                     onOpenSearch = { nav.navigate(Routes.search(id)) },
@@ -305,18 +311,28 @@ private fun RepoMasterNavHost(
         composable(Routes.GITIGNORE, arguments = listOf(navArgument("repoId") { type = NavType.LongType })) { bs ->
             GitignoreScreen(repoId = bs.arguments!!.getLong("repoId"), onBack = { nav.popBackStack() })
         }
-        composable(Routes.EXPLORER, arguments = listOf(
-            navArgument("repoId") { type = NavType.LongType },
-            navArgument("encodedPath") { type = NavType.StringType },
-        )) { bs ->
+        composable(
+            Routes.EXPLORER,
+            arguments = listOf(
+                navArgument("repoId") { type = NavType.LongType },
+                // Defaulted (not required) specifically so the repomaster://repo/{repoId}
+                // deep link below can resolve here without also specifying a path — landing
+                // on the repo's root folder, same as tapping into it normally from Home.
+                // When present, this is now a "reveal" hint (auto-expand to this file) rather
+                // than a navigation target — folders expand inline in the tree instead of
+                // pushing a new screen, so there's no separate "explorer at this subfolder"
+                // destination anymore.
+                navArgument("encodedPath") { type = NavType.StringType; defaultValue = "." },
+            ),
+            deepLinks = listOf(androidx.navigation.navDeepLink { uriPattern = "repomaster://repo/{repoId}" }),
+        ) { bs ->
             val id = bs.arguments!!.getLong("repoId")
             val decoded = java.net.URLDecoder.decode(bs.arguments!!.getString("encodedPath") ?: "", "UTF-8")
-            val path = if (decoded == ".") "" else decoded
+            val revealPath = if (decoded == ".") "" else decoded
             FileExplorerScreen(
                 repoId = id,
-                relativePath = path,
+                revealPath = revealPath,
                 onBack = { nav.popBackStack() },
-                onOpenFolder = { childPath -> nav.navigate(Routes.explorer(id, childPath)) },
                 onOpenFile = { filePath -> nav.navigate(Routes.editor(id, filePath)) },
                 onOpenBlame = { filePath -> nav.navigate(Routes.blame(id, filePath)) },
                 onOpenSearch = { nav.navigate(Routes.search(id)) },
@@ -344,7 +360,11 @@ private fun RepoMasterNavHost(
                 onEditFile = { path -> nav.navigate(Routes.editor(id, path)) },
             )
         }
-        composable(Routes.ACTIONS, arguments = listOf(navArgument("repoId") { type = NavType.LongType })) { bs ->
+        composable(
+            Routes.ACTIONS,
+            arguments = listOf(navArgument("repoId") { type = NavType.LongType }),
+            deepLinks = listOf(androidx.navigation.navDeepLink { uriPattern = "repomaster://repo/{repoId}/actions" }),
+        ) { bs ->
             val id = bs.arguments!!.getLong("repoId")
             com.willykez.repomaster.ui.screens.actions.ActionsScreen(
                 repoId = id,

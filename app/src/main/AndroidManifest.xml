@@ -65,6 +65,22 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!--
+                repomaster:// deep links — jump straight into a specific repo or its
+                Actions screen instead of always landing on the repo list. Used by
+                sync/SyncNotifier.kt so tapping a notification opens the exact repo
+                it's about, and available for anything else that wants to link
+                directly into the app (a share, a shortcut, adb, etc.).
+                Scoped to just the two nav destinations that are self-contained by
+                repoId already (Explorer, Actions) — see navigation/AppNav.kt.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="repomaster" android:host="repo" />
+            </intent-filter>
         </activity>
 
         <!--

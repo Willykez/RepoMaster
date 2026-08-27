@@ -281,6 +281,20 @@ fun ActionsScreen(repoId: Long, onBack: () -> Unit, vm: ActionsViewModel = viewM
             TopAppBar(
                 title = { RepoTitleBlock(state.repoName.ifBlank { "Actions" }, state.branch) },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back to repos") } },
+                actions = {
+                    // GitHub's own Actions UI shows things this screen deliberately doesn't try
+                    // to replicate — full raw logs, artifact browsing beyond APKs, re-run-with-
+                    // debug-logging, matrix job breakdowns. One tap out to the real thing instead
+                    // of half-reimplementing all of that here.
+                    state.fullName?.let { fullName ->
+                        val context = LocalContext.current
+                        IconButton(onClick = {
+                            openUrl(context, "https://github.com/$fullName/actions")
+                        }) {
+                            Icon(Icons.Filled.OpenInBrowser, "View on GitHub")
+                        }
+                    }
+                },
             )
         },
         snackbarHost = { SnackbarHost(snack) },
@@ -400,6 +414,16 @@ internal fun relativeTime(iso: String): String {
     }
 }
 
+/** Opens a URL in whatever browser the device has, failing quietly with a toast rather than
+ *  crashing on the rare device with no browser at all (some locked-down work profiles). */
+private fun openUrl(context: android.content.Context, url: String) {
+    try {
+        context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+    } catch (e: Exception) {
+        android.widget.Toast.makeText(context, "No browser found to open this link", android.widget.Toast.LENGTH_LONG).show()
+    }
+}
+
 @Composable
 private fun RunCard(
     run: WorkflowRun,
@@ -449,6 +473,12 @@ private fun RunCard(
                 }
                 Spacer(Modifier.width(8.dp))
                 Text(label, color = color, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                if (run.htmlUrl.isNotBlank()) {
+                    val context = LocalContext.current
+                    IconButton(onClick = { openUrl(context, run.htmlUrl) }, modifier = Modifier.size(28.dp)) {
+                        Icon(Icons.Filled.OpenInBrowser, "View on GitHub", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
             }
 
             AnimatedVisibility(

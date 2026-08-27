@@ -40,8 +40,8 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         val automatedRepoIds = AutomationPrefs.enabledRepoIds(applicationContext)
 
         var anyFailure = false
-        val reposWithNewCommits = mutableListOf<String>()
-        val reposAutoCommitted = mutableListOf<String>()
+        val reposWithNewCommits = mutableListOf<Pair<Long, String>>()
+        val reposAutoCommitted = mutableListOf<Pair<Long, String>>()
 
         for (repo in repos) {
             val credential = if (repo.credentialId != 0L) app.credentialRepository.getById(repo.credentialId) else null
@@ -57,7 +57,7 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                     when (val result = GitEngine.fetchAndCountUpdates(git, credential = credential)) {
                         is GitResult.Success -> {
                             app.repoRepository.markSyncSuccess(repo.id)
-                            if (result.data > 0) reposWithNewCommits.add(repo.name)
+                            if (result.data > 0) reposWithNewCommits.add(repo.id to repo.name)
                         }
                         is GitResult.Error -> {
                             anyFailure = true
@@ -67,7 +67,7 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
 
                     if (repo.id in automatedRepoIds) {
                         val didCommit = runAutomation(repo.id, repo.name, git, credential)
-                        if (didCommit) reposAutoCommitted.add(repo.name)
+                        if (didCommit) reposAutoCommitted.add(repo.id to repo.name)
                     }
 
                     git.close()
@@ -75,7 +75,7 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
             }
         }
 
-        SyncNotifier.notify(applicationContext, reposWithNewCommits)
+        SyncNotifier.notifyNewCommits(applicationContext, reposWithNewCommits)
         SyncNotifier.notifyAutomation(applicationContext, reposAutoCommitted)
 
         // Retry later on failure (e.g. a transient network issue) rather than giving up for
