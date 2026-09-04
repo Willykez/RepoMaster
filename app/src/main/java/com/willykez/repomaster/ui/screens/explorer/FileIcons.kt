@@ -17,10 +17,15 @@ import com.willykez.repomaster.ui.theme.StatusClean
  * doesn't ship one), but covers the file types that actually show up in a typical repo.
  */
 @Composable
-fun fileIconFor(node: FileNode): Pair<ImageVector, androidx.compose.ui.graphics.Color> {
-    if (node.isDirectory) return Icons.Filled.Folder to CommandBlue
+fun fileIconFor(node: FileNode): Pair<ImageVector, androidx.compose.ui.graphics.Color> = fileIconFor(node.name, node.isDirectory)
 
-    val name = node.name.substringAfterLast('/').lowercase()
+/** Same mapping as the [FileNode] overload, usable anywhere only a filename is at hand (e.g.
+ *  the file editor's top bar, which only ever has a path — not a full tree [FileNode]). */
+@Composable
+fun fileIconFor(fileName: String, isDirectory: Boolean = false): Pair<ImageVector, androidx.compose.ui.graphics.Color> {
+    if (isDirectory) return Icons.Filled.Folder to CommandBlue
+
+    val name = fileName.substringAfterLast('/').lowercase()
     val ext = name.substringAfterLast('.', missingDelimiterValue = "")
 
     return when {

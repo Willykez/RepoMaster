@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.FolderOff
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.Label
 import androidx.compose.material.icons.filled.PlayCircleOutline
+import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -83,6 +84,7 @@ fun MoreScreen(
     onOpenGitignore: () -> Unit,
     onOpenConflicts: () -> Unit,
     onOpenActions: () -> Unit,
+    onOpenConsole: () -> Unit,
 ) {
     val context = LocalContext.current
     val repoInfo by produceState<Pair<String, String>?>(initialValue = null, repoId) {
@@ -123,6 +125,13 @@ fun MoreScreen(
             accent = Amber,
             tools = listOf(
                 ToolTile("Actions", Icons.Filled.PlayCircleOutline, onOpenActions),
+            ),
+        ),
+        ToolCategory(
+            title = "Advanced",
+            accent = StatusClean,
+            tools = listOf(
+                ToolTile("Console", Icons.Filled.Terminal, onOpenConsole),
             ),
         ),
     )

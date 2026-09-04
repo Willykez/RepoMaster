@@ -90,6 +90,29 @@ object GitEngine {
         git.rm().addFilepattern(path).call(); Unit
     }
 
+    /** `git mv` — renames on disk, then stages it as a rename in the index (an index-only
+     *  removal of [oldPath] via `setCached(true)`, since the file's already physically moved,
+     *  plus a normal add of [newPath]) rather than a plain filesystem rename with no git
+     *  awareness at all. Used by the git console's `mv` command. */
+    suspend fun moveFile(git: Git, oldPath: String, newPath: String): GitResult<Unit> = io {
+        val workTree = git.repository.workTree
+        val oldFile = File(workTree, oldPath)
+        val newFile = File(workTree, newPath)
+        newFile.parentFile?.mkdirs()
+        if (!oldFile.renameTo(newFile)) throw IllegalStateException("Couldn't rename $oldPath to $newPath")
+        git.rm().addFilepattern(oldPath).setCached(true).call()
+        git.add().addFilepattern(newPath).call()
+        Unit
+    }
+
+    /** `git clean` — deletes untracked files (and, with [directories], untracked directories
+     *  too). [dryRun] mirrors `-n`: returns what *would* be deleted without touching anything —
+     *  exactly the safety check the git console runs before ever calling this for real, given
+     *  the cheat sheet's own warning against running `clean -f`/`-fd` blindly. */
+    suspend fun cleanUntracked(git: Git, directories: Boolean = false, dryRun: Boolean = false): GitResult<List<String>> = io {
+        git.clean().setCleanDirectories(directories).setDryRun(dryRun).call().toList()
+    }
+
     suspend fun unstageFile(git: Git, path: String): GitResult<Unit> = io {
         git.reset().addPath(path).call(); Unit
     }

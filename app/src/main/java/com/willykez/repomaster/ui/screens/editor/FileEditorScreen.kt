@@ -1,6 +1,7 @@
 package com.willykez.repomaster.ui.screens.editor
 
 import android.app.Application
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
@@ -12,6 +13,8 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
@@ -50,6 +53,9 @@ data class EditorUiState(
     val canUndo: Boolean = false,
     val canRedo: Boolean = false,
     val showPreview: Boolean = false,
+    val findQuery: String = "",
+    val findMatches: List<IntRange> = emptyList(),
+    val findMatchIndex: Int = -1,
 )
 
 class FileEditorViewModel(app: Application) : AndroidViewModel(app) {
@@ -150,6 +156,15 @@ class FileEditorViewModel(app: Application) : AndroidViewModel(app) {
         _uiState.value = _uiState.value.copy(text = current.copy(selection = TextRange(offset, offset)))
     }
 
+    /** Selects [start] until [end] — used by find-in-file to highlight the current match,
+     *  same idea as [moveCursorTo] but a range instead of a bare cursor position. */
+    fun selectRange(start: Int, end: Int) {
+        val current = _uiState.value.text
+        val clampedStart = start.coerceIn(0, current.text.length)
+        val clampedEnd = end.coerceIn(0, current.text.length)
+        _uiState.value = _uiState.value.copy(text = current.copy(selection = TextRange(clampedStart, clampedEnd)))
+    }
+
     fun togglePreview() {
         _uiState.value = _uiState.value.copy(showPreview = !_uiState.value.showPreview)
     }
@@ -176,10 +191,12 @@ class FileEditorViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Save, then stage + commit + push this one file — the quick path from "edited a file" to "pushed it". */
-    fun saveCommitAndPush(commitMessage: String, authorName: String, authorEmail: String) {
+    fun saveCommitAndPush(commitMessage: String) {
         val repo = _uiState.value.repo ?: return
         val relativePath = _uiState.value.relativePath
         val content = _uiState.value.text.text
+        val authorName = com.willykez.repomaster.data.GitIdentityPrefs.currentName(appRef)
+        val authorEmail = com.willykez.repomaster.data.GitIdentityPrefs.currentEmail(appRef)
 
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isSaving = true)
@@ -224,6 +241,37 @@ class FileEditorViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Find-in-file — distinct from the repo-wide Search screen, which answers "which file has
+     *  this" by scanning every file on disk. This only ever looks inside the buffer already
+     *  open here, and (unlike repo-wide search) updates live as the text underneath it changes. */
+    fun setFindQuery(query: String) {
+        val text = _uiState.value.text.text
+        val matches = if (query.isBlank()) emptyList() else buildList {
+            var idx = text.indexOf(query, 0, ignoreCase = true)
+            while (idx >= 0) {
+                add(idx until (idx + query.length))
+                idx = text.indexOf(query, idx + 1, ignoreCase = true)
+            }
+        }
+        _uiState.value = _uiState.value.copy(findQuery = query, findMatches = matches, findMatchIndex = if (matches.isEmpty()) -1 else 0)
+    }
+
+    fun findNext() {
+        val s = _uiState.value
+        if (s.findMatches.isEmpty()) return
+        _uiState.value = s.copy(findMatchIndex = (s.findMatchIndex + 1) % s.findMatches.size)
+    }
+
+    fun findPrevious() {
+        val s = _uiState.value
+        if (s.findMatches.isEmpty()) return
+        _uiState.value = s.copy(findMatchIndex = (s.findMatchIndex - 1 + s.findMatches.size) % s.findMatches.size)
+    }
+
+    fun closeFind() {
+        _uiState.value = _uiState.value.copy(findQuery = "", findMatches = emptyList(), findMatchIndex = -1)
+    }
+
     fun dismissMessage() {
         _uiState.value = _uiState.value.copy(message = null)
     }
@@ -243,6 +291,7 @@ fun FileEditorScreen(
     var showPushDialog by remember { mutableStateOf(false) }
     var showGoToLine by remember { mutableStateOf(false) }
     var showOverflow by remember { mutableStateOf(false) }
+    var showFind by remember { mutableStateOf(false) }
     val language = remember(relativePath) { languageForPath(relativePath) }
     val isMarkdown = language == CodeLanguage.MARKDOWN
     val editorScrollState = rememberScrollState()
@@ -275,18 +324,46 @@ fun FileEditorScreen(
         lineColForOffset(state.text.text, state.text.selection.start)
     }
 
+    suspend fun scrollToLine(line: Int) {
+        val targetPx = with(density) { (lineHeight.toPx() * (line - 1) - 80).coerceAtLeast(0f) }
+        editorScrollState.animateScrollTo(targetPx.toInt())
+    }
+
+    // Jumps to and selects whichever match is current whenever the find query or the
+    // selected match index changes — Next/Previous just move findMatchIndex, this is what
+    // actually moves the cursor/scroll position in response.
+    LaunchedEffect(state.findMatchIndex, state.findQuery) {
+        val match = state.findMatches.getOrNull(state.findMatchIndex) ?: return@LaunchedEffect
+        vm.selectRange(match.first, match.last + 1)
+        val (line, _) = lineColForOffset(state.text.text, match.first)
+        scrollToLine(line)
+    }
+
     Scaffold(
         topBar = {
             Column {
                 TopAppBar(
                     title = {
-                        Column {
-                            Text(relativePath.substringAfterLast('/'), fontWeight = FontWeight.SemiBold, maxLines = 1)
+                        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                             if (!state.isBinaryOrTooLarge && !state.isLoading) {
-                                Text(
-                                    "${languageLabel(language)} · Ln $currentLine, Col $currentCol",
-                                    style = MaterialTheme.typography.labelSmall, color = StatusClean,
-                                )
+                                val (icon, tint) = com.willykez.repomaster.ui.screens.explorer.fileIconFor(relativePath)
+                                Icon(icon, null, Modifier.size(18.dp), tint = tint)
+                                Spacer(Modifier.width(8.dp))
+                            }
+                            Column {
+                                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                                    Text(relativePath.substringAfterLast('/'), fontWeight = FontWeight.SemiBold, maxLines = 1)
+                                    if (state.isDirty) {
+                                        Spacer(Modifier.width(6.dp))
+                                        Box(Modifier.size(6.dp).background(CommandBlue, androidx.compose.foundation.shape.CircleShape))
+                                    }
+                                }
+                                if (!state.isBinaryOrTooLarge && !state.isLoading) {
+                                    Text(
+                                        "${languageLabel(language)} · Ln $currentLine, Col $currentCol",
+                                        style = MaterialTheme.typography.labelSmall, color = StatusClean,
+                                    )
+                                }
                             }
                         }
                     },
@@ -295,6 +372,7 @@ fun FileEditorScreen(
                     },
                     actions = {
                         if (!state.isBinaryOrTooLarge && !state.isLoading) {
+                            IconButton(onClick = { showFind = true }) { Icon(Icons.Filled.Search, "Find in file") }
                             IconButton(onClick = vm::undo, enabled = state.canUndo) {
                                 Icon(Icons.AutoMirrored.Filled.Undo, "Undo")
                             }
@@ -335,6 +413,17 @@ fun FileEditorScreen(
                         }
                     },
                 )
+                if (showFind) {
+                    FindBar(
+                        query = state.findQuery,
+                        matchCount = state.findMatches.size,
+                        matchIndex = state.findMatchIndex,
+                        onQueryChange = vm::setFindQuery,
+                        onNext = vm::findNext,
+                        onPrevious = vm::findPrevious,
+                        onClose = { showFind = false; vm.closeFind() },
+                    )
+                }
             }
         },
         snackbarHost = { SnackbarHost(snack) { d -> Snackbar(d) } },
@@ -369,13 +458,14 @@ fun FileEditorScreen(
 
     if (showGoToLine) {
         var input by remember { mutableStateOf("") }
+        val maxLine = remember(state.text.text) { state.text.text.count { it == '\n' } + 1 }
         AlertDialog(
             onDismissRequest = { showGoToLine = false },
             title = { Text("Go to line") },
             text = {
                 Column {
                     Text(
-                        "Line, or line:column — e.g. \"156\" or \"156:13\"",
+                        "Line, or line:column — e.g. \"156\" or \"156:13\" (1\u2013$maxLine)",
                         style = MaterialTheme.typography.bodySmall, color = StatusClean,
                     )
                     Spacer(Modifier.height(8.dp))
@@ -391,15 +481,12 @@ fun FileEditorScreen(
             confirmButton = {
                 TextButton(onClick = {
                     val parts = input.split(":")
-                    val line = parts.getOrNull(0)?.toIntOrNull()
+                    val line = parts.getOrNull(0)?.toIntOrNull()?.coerceIn(1, maxLine)
                     val col = parts.getOrNull(1)?.toIntOrNull() ?: 1
-                    if (line != null && line >= 1) {
+                    if (line != null) {
                         val offset = offsetForLineCol(state.text.text, line, col)
                         vm.moveCursorTo(offset)
-                        coroutineScope.launch {
-                            val targetPx = with(density) { (lineHeight.toPx() * (line - 1) - 80).coerceAtLeast(0f) }
-                            editorScrollState.animateScrollTo(targetPx.toInt())
-                        }
+                        coroutineScope.launch { scrollToLine(line) }
                     }
                     showGoToLine = false
                 }) { Text("Go") }
@@ -424,10 +511,48 @@ fun FileEditorScreen(
             confirmButton = {
                 TextButton(onClick = {
                     showPushDialog = false
-                    vm.saveCommitAndPush(commitMessage, "Repo Master User", "repomaster@users.noreply.github.com")
+                    vm.saveCommitAndPush(commitMessage)
                 }) { Text("Push") }
             },
             dismissButton = { TextButton(onClick = { showPushDialog = false }) { Text("Cancel") } },
         )
+    }
+}
+
+/** Find-in-file bar — sits under the top bar rather than a dialog, since you typically want
+ *  to keep tapping Next/Previous while glancing at the highlighted match in the editor below,
+ *  which a modal dialog would cover up. */
+@Composable
+private fun FindBar(
+    query: String, matchCount: Int, matchIndex: Int,
+    onQueryChange: (String) -> Unit, onNext: () -> Unit, onPrevious: () -> Unit, onClose: () -> Unit,
+) {
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+
+    Surface(tonalElevation = 3.dp) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+        ) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = onQueryChange,
+                modifier = Modifier.weight(1f).focusRequester(focusRequester),
+                placeholder = { Text("Find in file") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Next),
+                keyboardActions = androidx.compose.foundation.text.KeyboardActions(onNext = { onNext() }),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                if (query.isBlank()) "" else if (matchCount == 0) "0/0" else "${matchIndex + 1}/$matchCount",
+                style = MaterialTheme.typography.labelSmall, color = StatusClean,
+                modifier = Modifier.widthIn(min = 36.dp),
+            )
+            IconButton(onClick = onPrevious, enabled = matchCount > 0) { Icon(Icons.Filled.KeyboardArrowUp, "Previous match") }
+            IconButton(onClick = onNext, enabled = matchCount > 0) { Icon(Icons.Filled.KeyboardArrowDown, "Next match") }
+            IconButton(onClick = onClose) { Icon(Icons.Filled.Close, "Close find") }
+        }
     }
 }

@@ -62,6 +62,7 @@ object Routes {
     const val CHANGES_TAB = "changes_tab"
     const val HISTORY_TAB = "history_tab"
     const val MORE        = "more"
+    const val CONSOLE     = "console/{repoId}"
     const val FILES_TAB   = "files_tab"
 
     // Deep / stack screens — unchanged from before, still reached by pushing
@@ -98,6 +99,7 @@ object Routes {
     fun actions(id: Long) = "actions/$id"
     fun blame(id: Long, path: String) = "blame/$id/${java.net.URLEncoder.encode(path, "UTF-8")}"
     fun search(id: Long) = "search/$id"
+    fun console(id: Long) = "console/$id"
 
     // repomaster:// deep links — see the intent-filter in AndroidManifest.xml and the
     // deepLinks= on EXPLORER/ACTIONS above. Kept as plain strings (not tied to explorer()/
@@ -254,6 +256,14 @@ private fun RepoMasterNavHost(
                 onOpenGitignore = { selectedRepoId?.let { nav.navigate(Routes.gitignore(it)) } },
                 onOpenConflicts = { selectedRepoId?.let { nav.navigate(Routes.conflicts(it)) } },
                 onOpenActions = { selectedRepoId?.let { nav.navigate(Routes.actions(it)) } },
+                onOpenConsole = { selectedRepoId?.let { nav.navigate(Routes.console(it)) } },
+            )
+        }
+
+        composable(Routes.CONSOLE, arguments = listOf(navArgument("repoId") { type = NavType.LongType })) { bs ->
+            com.willykez.repomaster.ui.screens.console.GitConsoleScreen(
+                repoId = bs.arguments!!.getLong("repoId"),
+                onBack = { nav.popBackStack() },
             )
         }
 
