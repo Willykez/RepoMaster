@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.PlayCircleOutline
 import androidx.compose.material.icons.filled.RemoveCircleOutline
 import androidx.compose.material.icons.filled.GetApp
 import androidx.compose.material.icons.filled.HourglassEmpty
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -291,7 +292,7 @@ fun ActionsScreen(repoId: Long, onBack: () -> Unit, vm: ActionsViewModel = viewM
                         IconButton(onClick = {
                             openUrl(context, "https://github.com/$fullName/actions")
                         }) {
-                            Icon(Icons.Filled.Public, "View on GitHub")
+                            Icon(Icons.Filled.Language, "View on GitHub")
                         }
                     }
                 },
@@ -476,7 +477,7 @@ private fun RunCard(
                 if (run.htmlUrl.isNotBlank()) {
                     val context = LocalContext.current
                     IconButton(onClick = { openUrl(context, run.htmlUrl) }, modifier = Modifier.size(28.dp)) {
-                        Icon(Icons.Filled.Public, "View on GitHub", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Icon(Icons.Filled.Language, "View on GitHub", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }

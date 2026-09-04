@@ -164,7 +164,13 @@ object GitConsoleInterpreter {
             (GitEngine.getStatus(git).getOrNull() ?: emptyList()).filter { it.staged == cached }.map { it.path }
         }
         if (paths.isEmpty()) return ""
-        return paths.joinToString("\n\n") { path -> GitEngine.getDiff(git, path, cached).getOrNull() ?: "" }.trim()
+
+        val diffs = mutableListOf<String>()
+        for (path in paths) {
+            val diff = GitEngine.getDiff(git, path, cached).getOrNull() ?: ""
+            if (diff.isNotBlank()) diffs.add(diff)
+        }
+        return diffs.joinToString("\n\n").trim()
     }
 
     private suspend fun cmdLog(git: Git, args: List<String>): String {
@@ -205,7 +211,13 @@ object GitConsoleInterpreter {
             val r = GitEngine.stageAll(git)
             return if (r is GitResult.Success) "" else "error: ${(r as GitResult.Error).message}"
         }
-        val failed = args.filterNot { it.startsWith("-") }.filter { GitEngine.stageFile(git, it) is GitResult.Error }
+
+        val failed = mutableListOf<String>()
+        for (target in args.filterNot { it.startsWith("-") }) {
+            if (GitEngine.stageFile(git, target) is GitResult.Error) {
+                failed.add(target)
+            }
+        }
         return if (failed.isEmpty()) "" else "error: pathspec(s) did not match any files: ${failed.joinToString(", ")}"
     }
 
