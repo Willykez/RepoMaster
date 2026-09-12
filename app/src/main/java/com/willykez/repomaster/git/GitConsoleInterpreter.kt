@@ -164,7 +164,6 @@ object GitConsoleInterpreter {
             (GitEngine.getStatus(git).getOrNull() ?: emptyList()).filter { it.staged == cached }.map { it.path }
         }
         if (paths.isEmpty()) return ""
-
         val diffs = mutableListOf<String>()
         for (path in paths) {
             val diff = GitEngine.getDiff(git, path, cached).getOrNull() ?: ""
@@ -211,7 +210,6 @@ object GitConsoleInterpreter {
             val r = GitEngine.stageAll(git)
             return if (r is GitResult.Success) "" else "error: ${(r as GitResult.Error).message}"
         }
-
         val failed = mutableListOf<String>()
         for (target in args.filterNot { it.startsWith("-") }) {
             if (GitEngine.stageFile(git, target) is GitResult.Error) {

@@ -112,6 +112,11 @@ fun DiffScreen(
     val isCommit = stagedOrCommit == "commit"
     val totalAdditions = remember(state.sections) { state.sections.sumOf { it.additions } }
     val totalDeletions = remember(state.sections) { state.sections.sumOf { it.deletions } }
+    // Defaults to wrapping ON — a diff line or file path cut off at the screen edge with no
+    // visible way to scroll it into view is the actual problem being fixed here. The toggle
+    // is for the opposite preference (authentic monospace alignment via horizontal scroll,
+    // once you know it's there), not a requirement to get full content on screen.
+    var wordWrap by remember { mutableStateOf(true) }
 
     Scaffold(
         topBar = {
@@ -154,6 +159,21 @@ fun DiffScreen(
                                 if (allCollapsed) Icons.Filled.UnfoldMore else Icons.Filled.UnfoldLess,
                                 if (allCollapsed) "Expand all" else "Collapse all",
                             )
+                        }
+                    }
+                    if (state.sections.isNotEmpty()) {
+                        val scope = rememberCoroutineScope()
+                        IconButton(onClick = { wordWrap = !wordWrap }) {
+                            Icon(
+                                Icons.Filled.SwapHoriz, if (wordWrap) "Turn off wrapping" else "Wrap long lines",
+                                tint = if (wordWrap) MaterialTheme.colorScheme.onSurfaceVariant else CommandBlue,
+                            )
+                        }
+                        IconButton(onClick = {
+                            clipboard.setText(AnnotatedString(buildPlainTextDiff(state.sections)))
+                            scope.launch { snack.showSnackbar("Diff copied") }
+                        }) {
+                            Icon(Icons.Filled.ContentCopy, "Copy full diff")
                         }
                     }
                 },
@@ -221,7 +241,7 @@ fun DiffScreen(
                             } else {
                                 val lang = languageForPath(section.displayPath)
                                 itemsIndexed(section.lines, key = { lineIdx, _ -> "$fileIdx:$lineIdx" }) { _, line ->
-                                    DiffLineRow(line, lang, syntaxColors, hScroll, itemModifier = Modifier.animateItem())
+                                    DiffLineRow(line, lang, syntaxColors, hScroll, wordWrap, itemModifier = Modifier.animateItem())
                                 }
                             }
                         }
@@ -279,7 +299,7 @@ private fun DiffFileHeader(
                     section.displayPath,
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
-                    maxLines = 1,
+                    maxLines = 2,
                 )
                 if (section.isRenamed && section.oldPath != null) {
                     Text(
@@ -312,6 +332,7 @@ private fun DiffLineRow(
     lang: CodeLanguage,
     syntaxColors: SyntaxColorSet,
     hScroll: androidx.compose.foundation.ScrollState,
+    wordWrap: Boolean,
     itemModifier: Modifier = Modifier,
 ) {
     if (line.type == DiffLineType.HUNK) {
@@ -320,7 +341,7 @@ private fun DiffLineRow(
             fontFamily = FontFamily.Monospace,
             fontSize = 11.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            softWrap = false,
+            softWrap = wordWrap,
             modifier = itemModifier
                 .fillMaxWidth()
                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
@@ -363,16 +384,32 @@ private fun DiffLineRow(
             lineHeight = 18.sp,
             modifier = Modifier.width(14.dp),
         )
-        Box(Modifier.weight(1f).horizontalScroll(hScroll)) {
+        if (wordWrap) {
+            // No horizontalScroll wrapper at all here — this is the actual fix for content
+            // getting cut off with no way to see the rest: a wrapped Text can never hide
+            // anything off-screen, whereas a scrollable one only reveals more on a gesture
+            // that isn't obviously available in a vertically-scrolling list.
             Text(
                 text = highlightText(line.text, lang, syntaxColors),
                 color = syntaxColors.plain,
                 fontFamily = FontFamily.Monospace,
                 fontSize = 12.sp,
                 lineHeight = 18.sp,
-                softWrap = false,
-                modifier = Modifier.padding(end = 24.dp),
+                softWrap = true,
+                modifier = Modifier.weight(1f).padding(end = 8.dp),
             )
+        } else {
+            Box(Modifier.weight(1f).horizontalScroll(hScroll)) {
+                Text(
+                    text = highlightText(line.text, lang, syntaxColors),
+                    color = syntaxColors.plain,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                    lineHeight = 18.sp,
+                    softWrap = false,
+                    modifier = Modifier.padding(end = 24.dp),
+                )
+            }
         }
     }
 }

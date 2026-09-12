@@ -109,7 +109,9 @@ class FileExplorerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun currentDir(): File? = _uiState.value.repo?.let { File(it.fullSavePath) }
+    private fun currentDir(targetPath: String = ""): File? = _uiState.value.repo?.let {
+        if (targetPath.isBlank()) File(it.fullSavePath) else File(it.fullSavePath, targetPath)
+    }
 
     /** Re-lists the root and every currently-expanded folder, then re-scans git status —
      *  called after any mutation and by pull-to-refresh. Expand state survives a refresh (the
@@ -297,10 +299,14 @@ class FileExplorerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Deletes AND stages the removal in one step via `git rm` — a plain filesystem delete
-     * followed by a later "Stage" tap on the Changes screen used to silently do nothing,
-     * since JGit's AddCommand only ever adds content, never removes an index entry. This
-     * is what was actually breaking "delete a file, push, expect it gone on GitHub." */
+    /** Stages the removal via `git rm` (for anything git already tracks — a plain filesystem
+     *  delete followed by a later "Stage" tap used to silently do nothing there, since
+     *  AddCommand only ever adds content, never removes an index entry), AND always makes
+     *  sure the file/folder is actually gone from disk afterward regardless of whether git
+     *  rm did anything. That second part matters for a file or folder that was only just
+     *  created and never staged at all — `git rm` has nothing to remove from an index entry
+     *  that was never there, so relying on it alone silently failed to delete anything for a
+     *  brand-new mistake, which is exactly the case someone deleting it is most likely in. */
     fun delete(node: FileNode) {
         val repo = _uiState.value.repo ?: return
         viewModelScope.launch {
@@ -309,18 +315,29 @@ class FileExplorerViewModel(app: Application) : AndroidViewModel(app) {
                 is GitResult.Error -> _uiState.value = _uiState.value.copy(isBusy = false, message = opened.message)
                 is GitResult.Success -> {
                     val git = opened.data
-                    when (val result = GitEngine.removeFile(git, node.relativePath)) {
-                        is GitResult.Success -> _uiState.value = _uiState.value.copy(
-                            isBusy = false,
-                            message = "Deleted ${node.name} — staged, ready to commit",
-                        )
-                        is GitResult.Error -> _uiState.value = _uiState.value.copy(isBusy = false, message = result.message)
-                    }
+                    val staged = GitEngine.removeFile(git, node.relativePath) is GitResult.Success
                     git.close()
+                    val removedFromDisk = withContext(Dispatchers.IO) { deleteFromDisk(repo, node) }
+                    _uiState.value = _uiState.value.copy(
+                        isBusy = false,
+                        message = when {
+                            removedFromDisk && staged -> "Deleted ${node.name} — staged, ready to commit"
+                            removedFromDisk -> "Deleted ${node.name}" // wasn't tracked by git yet, nothing to stage
+                            else -> "Couldn't delete ${node.name}"
+                        },
+                    )
                     refresh()
                 }
             }
         }
+    }
+
+    /** @return true if [node] is gone from disk afterward, whether it needed deleting or
+     *  was already gone (e.g. `git rm` already removed a tracked file as a side effect). */
+    private fun deleteFromDisk(repo: RepoEntity, node: FileNode): Boolean {
+        val diskFile = File(repo.fullSavePath, node.relativePath)
+        if (!diskFile.exists()) return true
+        return if (node.isDirectory) diskFile.deleteRecursively() else diskFile.delete()
     }
 
     /** Stages every selected file/folder in one repo open/close pair — same underlying
@@ -350,9 +367,8 @@ class FileExplorerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Deletes-and-stages every selected file/folder — same `git rm` semantics per item as
-     *  the single-file delete (a plain filesystem delete wouldn't stage the removal, so
-     *  "Stage" afterward would silently do nothing; see [delete] for the full reasoning). */
+    /** Same fix as [delete], looped — stages whatever git already tracks, then always
+     *  confirms every selected item is actually gone from disk regardless. */
     fun bulkDelete(nodes: List<FileNode>) {
         val repo = _uiState.value.repo ?: return
         if (nodes.isEmpty()) return
@@ -362,11 +378,12 @@ class FileExplorerViewModel(app: Application) : AndroidViewModel(app) {
                 is GitResult.Error -> _uiState.value = _uiState.value.copy(isBusy = false, message = opened.message)
                 is GitResult.Success -> {
                     val git = opened.data
-                    var failed = 0
-                    for (node in nodes) {
-                        if (GitEngine.removeFile(git, node.relativePath) is GitResult.Error) failed++
-                    }
+                    for (node in nodes) GitEngine.removeFile(git, node.relativePath)
                     git.close()
+                    var failed = 0
+                    withContext(Dispatchers.IO) {
+                        for (node in nodes) if (!deleteFromDisk(repo, node)) failed++
+                    }
                     _uiState.value = _uiState.value.copy(
                         isBusy = false,
                         message = if (failed == 0) "Deleted ${nodes.size} item(s) — staged, ready to commit" else "Deleted ${nodes.size - failed} of ${nodes.size} — $failed failed",
@@ -382,11 +399,16 @@ class FileExplorerViewModel(app: Application) : AndroidViewModel(app) {
      *  screen-to-screen. Trade-off worth knowing: creating something inside a deeply nested
      *  folder means creating it at the root and dragging it in a file manager, or renaming it
      *  with the folder prefix in its name. */
-    fun createFile(name: String) {
-        val dir = currentDir() ?: return
+    /** [targetPath] is the folder to create inside — blank means the repo root. Passed
+     *  explicitly by the caller (either "" from the root FAB, or a specific folder's own
+     *  relativePath from that folder's "New file/folder here" menu item), since the tree has
+     *  no single "current folder" the way the old screen-per-folder navigation did. */
+    fun createFile(name: String, targetPath: String = "") {
+        val dir = currentDir(targetPath) ?: return
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
                 try {
+                    dir.mkdirs()
                     val f = File(dir, name)
                     if (f.exists()) return@withContext "A file named \"$name\" already exists"
                     f.createNewFile()
@@ -396,14 +418,16 @@ class FileExplorerViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             _uiState.value = _uiState.value.copy(message = result ?: "Created $name")
+            if (result == null && targetPath.isNotBlank()) _uiState.value = _uiState.value.copy(expandedPaths = _uiState.value.expandedPaths + targetPath)
             refresh()
         }
     }
 
-    fun createFolder(name: String) {
-        val dir = currentDir() ?: return
+    fun createFolder(name: String, targetPath: String = "") {
+        val dir = currentDir(targetPath) ?: return
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
+                dir.mkdirs()
                 val f = File(dir, name)
                 if (f.exists()) "A folder named \"$name\" already exists"
                 else if (f.mkdirs()) null
@@ -412,18 +436,20 @@ class FileExplorerViewModel(app: Application) : AndroidViewModel(app) {
             _uiState.value = _uiState.value.copy(
                 message = result ?: "Created $name — note: git won't track an empty folder until it has a file in it",
             )
+            if (result == null && targetPath.isNotBlank()) _uiState.value = _uiState.value.copy(expandedPaths = _uiState.value.expandedPaths + targetPath)
             refresh()
         }
     }
 
     /** Copies one or more picked files (from the system file manager / photos app / etc,
-     * via SAF) into the repo root, preserving their original filenames where possible. */
-    fun importFiles(context: Context, uris: List<Uri>) {
-        val dir = currentDir() ?: return
+     * via SAF) into [targetPath] (blank = repo root), preserving their original filenames. */
+    fun importFiles(context: Context, uris: List<Uri>, targetPath: String = "") {
+        val dir = currentDir(targetPath) ?: return
         if (uris.isEmpty()) return
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isBusy = true)
             val imported = withContext(Dispatchers.IO) {
+                dir.mkdirs()
                 var count = 0
                 for (uri in uris) {
                     try {
@@ -441,18 +467,20 @@ class FileExplorerViewModel(app: Application) : AndroidViewModel(app) {
                 count
             }
             _uiState.value = _uiState.value.copy(isBusy = false, message = "Imported $imported file(s)")
+            if (targetPath.isNotBlank()) _uiState.value = _uiState.value.copy(expandedPaths = _uiState.value.expandedPaths + targetPath)
             refresh()
         }
     }
 
     /** Recursively copies an entire picked folder (via SAF's "open document tree" picker)
-     * into a new subfolder here, named after the picked folder. */
-    fun importFolder(context: Context, treeUri: Uri) {
-        val dir = currentDir() ?: return
+     * into a new subfolder inside [targetPath] (blank = repo root), named after the picked folder. */
+    fun importFolder(context: Context, treeUri: Uri, targetPath: String = "") {
+        val dir = currentDir(targetPath) ?: return
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isBusy = true)
             val result = withContext(Dispatchers.IO) {
                 try {
+                    dir.mkdirs()
                     val pickedRoot = DocumentFile.fromTreeUri(context, treeUri)
                         ?: return@withContext "Couldn't open that folder"
                     val destRoot = File(dir, pickedRoot.name ?: "imported_folder")
@@ -464,6 +492,7 @@ class FileExplorerViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             _uiState.value = _uiState.value.copy(isBusy = false, message = result)
+            if (targetPath.isNotBlank()) _uiState.value = _uiState.value.copy(expandedPaths = _uiState.value.expandedPaths + targetPath)
             refresh()
         }
     }
@@ -543,6 +572,10 @@ fun FileExplorerScreen(
     var nodePendingDelete by remember { mutableStateOf<FileNode?>(null) }
     var showNewFileDialog by remember { mutableStateOf(false) }
     var showNewFolderDialog by remember { mutableStateOf(false) }
+    // Which folder "New file/folder here" and Import should create inside — "" means the
+    // repo root. Set right before showing a creation dialog or launching an import picker,
+    // from either the root FAB (always "") or a specific folder row's own "..." menu.
+    var createTargetPath by remember { mutableStateOf("") }
     var selectedPaths by remember { mutableStateOf(setOf<String>()) }
     var showBulkDeleteConfirm by remember { mutableStateOf(false) }
     var fabExpanded by remember { mutableStateOf(false) }
@@ -551,11 +584,11 @@ fun FileExplorerScreen(
 
     val importFilesLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments(),
-    ) { uris -> if (uris.isNotEmpty()) vm.importFiles(context, uris) }
+    ) { uris -> if (uris.isNotEmpty()) vm.importFiles(context, uris, createTargetPath) }
 
     val importFolderLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree(),
-    ) { uri -> uri?.let { vm.importFolder(context, it) } }
+    ) { uri -> uri?.let { vm.importFolder(context, it, createTargetPath) } }
 
     LaunchedEffect(repoId) { vm.load(repoId, revealPath) }
     LaunchedEffect(state.message) {
@@ -635,10 +668,10 @@ fun FileExplorerScreen(
                 FileExplorerFab(
                     expanded = fabExpanded,
                     onToggle = { fabExpanded = !fabExpanded },
-                    onNewFile = { fabExpanded = false; showNewFileDialog = true },
-                    onNewFolder = { fabExpanded = false; showNewFolderDialog = true },
-                    onImportFiles = { fabExpanded = false; importFilesLauncher.launch(arrayOf("*/*")) },
-                    onImportFolder = { fabExpanded = false; importFolderLauncher.launch(null) },
+                    onNewFile = { fabExpanded = false; createTargetPath = ""; showNewFileDialog = true },
+                    onNewFolder = { fabExpanded = false; createTargetPath = ""; showNewFolderDialog = true },
+                    onImportFiles = { fabExpanded = false; createTargetPath = ""; importFilesLauncher.launch(arrayOf("*/*")) },
+                    onImportFolder = { fabExpanded = false; createTargetPath = ""; importFolderLauncher.launch(null) },
                 )
             }
         },
@@ -683,6 +716,9 @@ fun FileExplorerScreen(
                             onRename = { nodePendingRename = row.node },
                             onDelete = { nodePendingDelete = row.node },
                             onBlame = { onOpenBlame(row.node.relativePath) },
+                            onNewFileHere = { createTargetPath = row.node.relativePath; showNewFileDialog = true },
+                            onNewFolderHere = { createTargetPath = row.node.relativePath; showNewFolderDialog = true },
+                            onImportFilesHere = { createTargetPath = row.node.relativePath; importFilesLauncher.launch(arrayOf("*/*")) },
                         )
                     }
                 }
@@ -704,11 +740,11 @@ fun FileExplorerScreen(
 
     if (showNewFileDialog) {
         SingleInputDialog("New File", "File name", "",
-            onConfirm = { vm.createFile(it); showNewFileDialog = false }, onDismiss = { showNewFileDialog = false })
+            onConfirm = { vm.createFile(it, createTargetPath); showNewFileDialog = false }, onDismiss = { showNewFileDialog = false })
     }
     if (showNewFolderDialog) {
         SingleInputDialog("New Folder", "Folder name", "",
-            onConfirm = { vm.createFolder(it); showNewFolderDialog = false }, onDismiss = { showNewFolderDialog = false })
+            onConfirm = { vm.createFolder(it, createTargetPath); showNewFolderDialog = false }, onDismiss = { showNewFolderDialog = false })
     }
     nodePendingRename?.let { node ->
         SingleInputDialog("Rename", "New name", node.name.substringAfterLast('/'),
@@ -758,6 +794,9 @@ private fun TreeRowItem(
     onRename: () -> Unit,
     onDelete: () -> Unit,
     onBlame: () -> Unit,
+    onNewFileHere: () -> Unit,
+    onNewFolderHere: () -> Unit,
+    onImportFilesHere: () -> Unit,
 ) {
     val node = row.node
     var showMenu by remember { mutableStateOf(false) }
@@ -852,6 +891,15 @@ private fun TreeRowItem(
                     Icon(Icons.Filled.MoreVert, null, Modifier.size(16.dp), tint = StatusClean)
                 }
                 DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                    if (node.isDirectory) {
+                        DropdownMenuItem(text = { Text("New file here") }, onClick = { showMenu = false; onNewFileHere() },
+                            leadingIcon = { Icon(Icons.Filled.NoteAdd, null) })
+                        DropdownMenuItem(text = { Text("New folder here") }, onClick = { showMenu = false; onNewFolderHere() },
+                            leadingIcon = { Icon(Icons.Filled.CreateNewFolder, null) })
+                        DropdownMenuItem(text = { Text("Import files here") }, onClick = { showMenu = false; onImportFilesHere() },
+                            leadingIcon = { Icon(Icons.Filled.UploadFile, null) })
+                        HorizontalDivider()
+                    }
                     DropdownMenuItem(text = { Text("Rename") }, onClick = { showMenu = false; onRename() },
                         leadingIcon = { Icon(Icons.Filled.Edit, null) })
                     if (!node.isDirectory) {

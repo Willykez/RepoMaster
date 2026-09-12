@@ -50,7 +50,40 @@ fun buildDiffCommitMessage(section: DiffFileSection): String {
     return if (stats.isEmpty()) "$verb $name" else "$verb $name (${stats.joinToString("/")})"
 }
 
-private val DiffGitHeader = Regex("""^diff --git a/(.*) b/(.*)$""")
+/**
+ * Renders the parsed sections back out as plain `git diff`-style text — what the Diff
+ * screen's "Copy full diff" button puts on the clipboard. Built from the already-parsed
+ * [DiffFileSection]s (not the raw diff text JGit returned) so it reflects exactly what's on
+ * screen, collapsed sections and all being irrelevant here since this always includes every
+ * section regardless of its expand state.
+ */
+fun buildPlainTextDiff(sections: List<DiffFileSection>): String {
+    val sb = StringBuilder()
+    for (section in sections) {
+        val fromPath = section.oldPath ?: section.displayPath
+        sb.append("diff --git a/$fromPath b/${section.displayPath}\n")
+        when {
+            section.isNew -> sb.append("new file\n")
+            section.isDeleted -> sb.append("deleted file\n")
+            section.isRenamed && section.oldPath != null -> sb.append("renamed from ${section.oldPath}\n")
+        }
+        if (section.isBinary) {
+            sb.append("Binary file differs\n\n")
+            continue
+        }
+        for (line in section.lines) {
+            val prefix = when (line.type) {
+                DiffLineType.ADDED -> "+"
+                DiffLineType.REMOVED -> "-"
+                DiffLineType.CONTEXT -> " "
+                DiffLineType.HUNK -> ""
+            }
+            sb.append(prefix).append(line.text).append('\n')
+        }
+        sb.append('\n')
+    }
+    return sb.toString().trimEnd()
+}
 private val HunkHeader = Regex("""^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@.*$""")
 
 /**
