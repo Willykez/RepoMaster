@@ -12,6 +12,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.LocalIndication
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
@@ -473,28 +475,18 @@ private fun RepoCard(
     ) {
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                BadgedBox(badge = {
-                    if (changeCount != null && changeCount > 0) {
-                        Badge(containerColor = Amber) { Text("$changeCount") }
-                    }
-                }) {
-                    Icon(Icons.Filled.FolderOpen, null, Modifier.size(20.dp), tint = CommandBlue)
-                }
+                Icon(Icons.Filled.FolderOpen, null, Modifier.size(20.dp), tint = CommandBlue)
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    repo.name, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 1, modifier = Modifier.weight(1f),
+                )
                 Spacer(Modifier.width(8.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(repo.name, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyLarge)
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        val branch = repo.branch.ifBlank { "—" }
-                        Text(branch, style = MaterialTheme.typography.labelSmall, color = Amber)
-                        val sync = if (repo.lastSyncTime > 0)
-                            DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(repo.lastSyncTime))
-                        else "never synced"
-                        Text("· $sync", style = MaterialTheme.typography.labelSmall, color = StatusClean)
-                        if (!hasCredential) {
-                            Text("· no credential", style = MaterialTheme.typography.labelSmall, color = StatusClean)
-                        }
-                    }
-                }
+                // One glance, one word — the whole point of a repo list is scanning which
+                // ones need attention without opening each one. A tiny badge riding on the
+                // folder icon did the same job but easy to miss; a named status pill next to
+                // the title can't be.
+                StatusPill(hasError = hasError, changeCount = changeCount)
                 Box {
                     IconButton(onClick = { showMore = true }, Modifier.size(32.dp)) {
                         Icon(Icons.Filled.MoreVert, null, Modifier.size(18.dp), tint = StatusClean)
@@ -515,8 +507,20 @@ private fun RepoCard(
                 }
             }
 
+            Spacer(Modifier.height(8.dp))
+            // A caption line built from icon+text pairs, not a run-on string glued together
+            // with "·" — each fact gets its own small icon, so the line reads as a scan of
+            // distinct attributes rather than one sentence you have to parse.
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                BranchChip(repo.branch.ifBlank { "—" })
+                CaptionFact(Icons.Filled.Schedule, if (repo.lastSyncTime > 0) {
+                    DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(repo.lastSyncTime))
+                } else "Never synced")
+                if (!hasCredential) CaptionFact(Icons.Filled.Key, "No credential", tint = Amber)
+            }
+
             if (hasError) {
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(8.dp))
                 Text(repo.lastError, style = MaterialTheme.typography.labelSmall, color = StatusDeleted, maxLines = 2)
                 if (needsCredential) {
                     Spacer(Modifier.height(4.dp))
@@ -532,7 +536,7 @@ private fun RepoCard(
                 }
             }
 
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 OutlinedButton(onClick = onPull, enabled = !isBusy, modifier = Modifier.weight(1f)) {
                     if (isBusy) CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
@@ -544,5 +548,44 @@ private fun RepoCard(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun StatusPill(hasError: Boolean, changeCount: Int?) {
+    val (label, color) = when {
+        hasError -> "Error" to StatusDeleted
+        changeCount != null && changeCount > 0 -> "$changeCount change${if (changeCount == 1) "" else "s"}" to Amber
+        else -> "Clean" to Emerald
+    }
+    Surface(color = color.copy(alpha = 0.16f), shape = RoundedCornerShape(20.dp)) {
+        Text(
+            label, style = MaterialTheme.typography.labelSmall, color = color, fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+        )
+    }
+}
+
+@Composable
+private fun BranchChip(branch: String) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(CommandBlue.copy(alpha = 0.14f))
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+    ) {
+        Icon(Icons.Filled.AccountTree, null, Modifier.size(11.dp), tint = CommandBlue)
+        Spacer(Modifier.width(3.dp))
+        Text(branch, style = MaterialTheme.typography.labelSmall, color = CommandBlue, maxLines = 1)
+    }
+}
+
+@Composable
+private fun CaptionFact(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String, tint: androidx.compose.ui.graphics.Color = StatusClean) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, null, Modifier.size(11.dp), tint = tint)
+        Spacer(Modifier.width(3.dp))
+        Text(text, style = MaterialTheme.typography.labelSmall, color = tint, maxLines = 1)
     }
 }
