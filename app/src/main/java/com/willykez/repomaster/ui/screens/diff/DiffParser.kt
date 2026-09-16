@@ -84,6 +84,8 @@ fun buildPlainTextDiff(sections: List<DiffFileSection>): String {
     }
     return sb.toString().trimEnd()
 }
+
+private val DiffGitHeader = Regex("""^diff --git a/(.*) b/(.*)$""")
 private val HunkHeader = Regex("""^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@.*$""")
 
 /**
